@@ -124,3 +124,16 @@ test("labels, ids and action wrapper", () => {
   assert.deepEqual(out.desired.labels, { provider: "flite", env: "sandbox", org: "org1", channelId: "ch1", listingId: "primary" });
   assert.equal(out.desired.eventUrn, URN);
 });
+
+test("ticket errors carry ticketId; sold-out owner status closes; maximumQuantity never read", () => {
+  const trap = { id: "t3", name: "C", status: "live", priceCategory: "free", costs: { cost: "USD,0" } };
+  Object.defineProperty(trap, "maximumQuantity", { get() { throw new Error("maximumQuantity read"); }, enumerable: false });
+  const d = buildDesiredState(snap({ channelTickets: [
+    { id: "t1", name: "A", status: "live", priceCategory: "paid", costs: { cost: "EUR,100" } },
+    { id: "t2", name: "B", status: "live", priceCategory: "paid", costs: { cost: "USD,900" } },
+    trap,
+  ], tickets: [{ id: "t2", capacity: 50, quantitySold: 5, status: "sold-out" }] }), opts);
+  assert.equal(d.errors.length, 1);
+  assert.match(d.errors[0], /^ticket t1:/);
+  assert.deepEqual(d.tickets.map((t) => [t.ticketId, t.availability, t.fields.ticketPrice]), [["t2", "false", 9], ["t3", "true", 0]]);
+});
