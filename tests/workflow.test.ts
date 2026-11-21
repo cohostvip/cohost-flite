@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { validateWorkflow } from "../scripts/workflow.ts";
+import { main, validateWorkflow } from "../scripts/workflow.ts";
 
 const FILE = "workflows/flite-sales-channel.workflow.json";
 const load = () => JSON.parse(readFileSync(FILE, "utf8"));
@@ -34,6 +33,14 @@ const mutations: Array<[string, (wf: any) => void, RegExp]> = [
   }, /terminal step|missing edge/],
   ["unknown F action", (wf) => { node(wf, "sync").uses.action = "sync-events"; }, /not in flite index/],
   ["listingId in mappingLabels", (wf) => { node(wf, "snapshot").with.mappingLabels.listingId = "x"; }, /mappingLabels/],
+  ["mappingLabels.env not bound to vars.env", (wf) => { node(wf, "snapshot").with.mappingLabels.env = "sandbox"; }, /mappingLabels\.env/],
+  ["mappingLabels.env bound to another var", (wf) => { node(wf, "snapshot").with.mappingLabels.env = { $: "vars.org" }; }, /mappingLabels\.env/],
+  ["expectedEnv not bound to vars.env", (wf) => { node(wf, "sync").with.expectedEnv = { $: "vars.org" }; }, /expectedEnv/],
+  ["expectedEnv literal", (wf) => { node(wf, "sync").with.expectedEnv = "production"; }, /expectedEnv/],
+  ["snapshot input missing on transformer", (wf) => { delete node(wf, "desired").with.snapshot; }, /snapshot must be bound/],
+  ["report code does not throw", (wf) => { node(wf, "report").with.code = "return { ok: true };"; }, /must throw when errors/],
+  ["report throws unconditionally", (wf) => { node(wf, "report").with.code = "throw new Error('x');"; }, /must throw when errors/],
+  ["report reachable around register", (wf) => { wf.edges.push({ from: "sync", to: "report" }); }, /without passing register|must not be reachable directly/],
   ["embedded connection id", (wf) => { node(wf, "sync").uses.connection = "conn_1"; }, /embeds a connection id/],
 ];
 for (const [name, mutate, re] of mutations) {
@@ -52,7 +59,7 @@ test("--token is rejected and install dry-run sends nothing", () => {
   const dry = spawnSync("node", ["scripts/workflow.ts", "install", FILE, "--w6w", "http://127.0.0.1:1", "--project", "p", "--token-file", "/dev/null"]);
   assert.equal(dry.status, 0);
   assert.match(String(dry.stdout), /^POST http:\/\/127\.0\.0\.1:1\/projects\/p\/workflows/);
-  assert.match(String(dry.stdout), /dry run/);
+  assert.match(String(dry.stderr), /dry run/);
 });
 
 const run = (...a: string[]) => spawnSync("node", ["scripts/workflow.ts", ...a]);
@@ -70,52 +77,50 @@ test("missing --w6w / --project / --token-file is refused", () => {
   }
 });
 
-test("--token with a reachable server: nonzero and no request", async () => {
-  const hits: string[] = [];
-  const srv = createServer((req, res) => { hits.push(`${req.method} ${req.url}`); res.end("{}"); });
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${(srv.address() as any).port}`;
-  const r = spawnSync("node", ["scripts/workflow.ts", "install", FILE, "--token", "sekret", "--w6w", url, "--project", "p", "--apply"]);
-  srv.close();
-  assert.notEqual(r.status, 0);
-  assert.deepEqual(hits, []);
-  assert.ok(!String(r.stdout).includes("sekret") && !String(r.stderr).includes("sekret"));
+const mkIo = () => {
+  const o = { calls: [] as Array<{ url: string; init: any }>, out: [] as string[], err: [] as string[] };
+  const io = {
+    fetch: (async (url: any, init: any) => { o.calls.push({ url: String(url), init }); return new Response("{}", { status: 200 }); }) as typeof fetch,
+    out: (s: string) => o.out.push(s),
+    err: (s: string) => o.err.push(s),
+  };
+  return { o, io };
+};
+
+test("--token and --token=x are rejected nonzero with no request", async () => {
+  for (const args of [["--token", "sekret"], ["--token=sekret"]]) {
+    const { o, io } = mkIo();
+    const code = await main(["install", FILE, ...args, "--w6w", "http://h", "--project", "p", "--apply"], io);
+    assert.notEqual(code, 0);
+    assert.deepEqual(o.calls, []);
+    assert.ok(![...o.out, ...o.err].join("\n").includes("sekret"));
+  }
 });
 
-test("dry run makes no request; --apply sends once with bearer from file, token never printed", async () => {
-  const hits = [] as Array<{ m?: string; u?: string; auth?: string; body: string }>;
-  const srv = createServer((req, res) => {
-    let body = "";
-    req.on("data", (c) => (body += c));
-    req.on("end", () => { hits.push({ m: req.method, u: req.url, auth: req.headers.authorization, body }); res.end("{}"); });
-  });
-  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
-  const url = `http://127.0.0.1:${(srv.address() as any).port}`;
+test("dry run makes no request; --apply sends once with bearer from file; output is method+path only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wf-"));
   const tf = join(dir, "tok");
   writeFileSync(tf, "s3cr3t-token\n");
-  const base = ["--w6w", url, "--project", "p", "--token-file", tf];
-  const exec = (...a: string[]) => new Promise<{ code: number | null; out: string }>((resolve) => {
-    const c = spawn("node", ["scripts/workflow.ts", ...a]);
-    let out = "";
-    c.stdout.on("data", (d) => (out += d));
-    c.stderr.on("data", (d) => (out += d));
-    c.on("close", (code) => resolve({ code, out }));
-  });
+  const base = ["--w6w", "http://h", "--project", "p", "--token-file", tf];
   for (const cmd of ["install", "publish"]) {
-    const dry = await exec(cmd, FILE, ...base, "--var", "env=sandbox");
-    assert.equal(dry.code, 0);
-    assert.match(dry.out, /^POST /);
+    const { o, io } = mkIo();
+    assert.equal(await main([cmd, FILE, ...base, "--var", "env=sandbox"], io), 0);
+    assert.equal(o.calls.length, 0, "no request without --apply");
+    assert.equal(o.out.length, 1);
+    assert.match(o.out[0], /^POST http:\/\/h\/projects\/p\/workflows/);
   }
-  assert.equal(hits.length as number, 0, "no request without --apply");
-  const pub = await exec("publish", FILE, ...base, "--apply");
-  assert.equal(pub.code, 0);
-  assert.equal(hits.length, 1);
-  assert.equal(hits[0].m, "POST");
-  assert.match(hits[0].u!, /^\/projects\/p\/workflows\/.+\/publish$/);
-  assert.equal(hits[0].auth, "Bearer s3cr3t-token");
-  assert.ok(!pub.out.includes("s3cr3t-token"));
-  srv.close();
+  const { o, io } = mkIo();
+  assert.equal(await main(["publish", FILE, ...base, "--apply"], io), 0);
+  assert.equal(o.calls.length, 1);
+  assert.equal(o.calls[0].init.method, "POST");
+  assert.match(o.calls[0].url, /^http:\/\/h\/projects\/p\/workflows\/.+\/publish$/);
+  assert.equal(o.calls[0].init.headers.authorization, "Bearer s3cr3t-token");
+  assert.equal(o.out.length, 1, "stdout is exactly one method+path line");
+  assert.match(o.out[0], /^POST \S+$/);
+  assert.ok(![...o.out, ...o.err].join("\n").includes("s3cr3t-token"));
+  const st = mkIo();
+  assert.equal(await main(["status", ...base], st.io), 0);
+  assert.deepEqual(st.o.out, ["GET http://h/projects/p/workflows/flite-sales-channel"]);
 });
 
 test("no process.env in the script and no credentials in the JSON", () => {

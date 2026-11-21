@@ -82,12 +82,28 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
     if (!j(w(snap).listingId).includes(`steps.${race.id}.output.meta.listingId`)) errs.push("snapshot.listingId must come from race meta");
     const ml = w(snap).mappingLabels ?? {};
     if (Object.keys(ml).sort().join() !== "channelId,env,org,provider" || ml.provider !== "flite") errs.push("mappingLabels must be exactly {provider:flite, env, org, channelId} (no listingId)");
-    if (!j(w(sync).expectedEnv).includes("vars.env")) errs.push("sync.expectedEnv must come from vars.env");
+    const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
+    if (!bound(ml.env, "vars.env")) errs.push("mappingLabels.env must be bound to vars.env");
+    if (!bound(w(sync).expectedEnv, "vars.env")) errs.push("sync.expectedEnv must be bound to vars.env");
+    if (!bound(w(desired).snapshot, `steps.${snap.id}.output`)) errs.push(`channel-event-to-flite.snapshot must be bound to steps.${snap.id}.output`);
     if (!j(w(sync).desired).includes(`steps.${desired.id}.output`)) errs.push("sync.desired must come from the transformer step");
     if (!j(w(reg).mappings).includes(`steps.${sync.id}.output.registrations`)) errs.push("register.mappings must be sync registrations");
     if (!(reg.retry?.maxAttempts >= 3)) errs.push("register step needs retry.maxAttempts >= 3");
     if (!j(w(report).input).includes(`steps.${sync.id}.output.errors`)) errs.push("terminal step must read sync errors");
-    if (!/throw/.test(String(w(report).code ?? ""))) errs.push("terminal step code must throw on errors");
+    const code = String(w(report).code ?? "");
+    if (!/if\s*\(.*(length|\.some|!==\s*0|>\s*0).*\)\s*\{?\s*throw\b/.test(code)) errs.push("terminal step code must throw when errors is non-empty");
+    // report must be reachable only through register: no path sync -> ... -> report avoiding register
+    const seen = new Set<string>([sync.id]);
+    const stack = [sync.id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const e of edges.filter((x) => x.from === cur)) {
+        if (e.to === reg.id || seen.has(e.to)) continue;
+        seen.add(e.to);
+        stack.push(e.to);
+      }
+    }
+    if (seen.has(report.id)) errs.push("terminal step reachable without passing register");
   }
   const text = JSON.stringify(wf);
   if (/"(token|apiKey|password|secret|accessToken)"\s*:/i.test(text)) errs.push("credential-looking key in workflow");
@@ -107,7 +123,7 @@ function parseArgs(argv: string[]) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--apply") apply = true;
-    else if (a === "--token") throw new Error("--token is rejected; use --token-file <path>");
+    else if (a === "--token" || a.startsWith("--token=")) throw new Error("--token is rejected; use --token-file <path>");
     else if (a === "--var" || a === "--connection") {
       const [k, ...rest] = (argv[++i] ?? "").split("=");
       (a === "--var" ? vars : conns)[k] = rest.join("=");
@@ -117,7 +133,10 @@ function parseArgs(argv: string[]) {
   return { flags, vars, conns, pos, apply };
 }
 
-async function remote(cmd: string, file: string | undefined, o: ReturnType<typeof parseArgs>): Promise<number> {
+export interface Io { fetch: typeof fetch; out: (s: string) => void; err: (s: string) => void }
+const realIo: Io = { fetch: (...a) => fetch(...a), out: (s) => console.log(s), err: (s) => console.error(s) };
+
+async function remote(cmd: string, file: string | undefined, o: ReturnType<typeof parseArgs>, io: Io): Promise<number> {
   const { w6w, project, "token-file": tokenFile } = o.flags;
   if (!w6w || !project || !tokenFile) throw new Error(`${cmd} needs --w6w <url> --project <p> --token-file <path>`);
   const base = `${w6w.replace(/\/+$/, "")}/projects/${encodeURIComponent(project)}/workflows`;
@@ -128,7 +147,7 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
     if (!file) throw new Error(`${cmd} needs a workflow file`);
     const wf = JSON.parse(readFileSync(file, "utf8")) as Json;
     const errs = await validateWorkflow(wf);
-    if (errs.length) { for (const e of errs) console.error(`invalid: ${e}`); return 1; }
+    if (errs.length) { for (const e of errs) io.err(`invalid: ${e}`); return 1; }
     for (const [k, v] of Object.entries(o.vars)) {
       const d = (wf.variables as Json[]).find((x) => x.key === k);
       if (!d) throw new Error(`unknown --var ${k}`);
@@ -142,31 +161,31 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
     path = cmd === "publish" ? `${base}/${wf.key}/publish` : base;
     body = JSON.stringify(wf);
   } else path = `${base}/flite-sales-channel`;
-  console.log(`${method} ${path}`);
-  if (!o.apply && method !== "GET") { console.log("dry run (pass --apply to send)"); return 0; }
+  io.out(`${method} ${path}`);
+  if (!o.apply && method !== "GET") { io.err("dry run (pass --apply to send)"); return 0; }
   const token = readFileSync(tokenFile, "utf8").trim();
-  const res = await fetch(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body });
-  console.log(`status ${res.status}`);
+  const res = await io.fetch(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body });
+  io.err(`status ${res.status}`);
   return res.ok ? 0 : 1;
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[], io: Io = realIo): Promise<number> {
   const [cmd, ...rest] = argv;
   let o;
-  try { o = parseArgs(rest); } catch (e) { console.error((e as Error).message); return 1; }
+  try { o = parseArgs(rest); } catch (e) { io.err((e as Error).message); return 1; }
   try {
     if (cmd === "validate") {
       const file = o.pos[0];
-      if (!file || !existsSync(file)) { console.error("validate <file>: file not found"); return 1; }
+      if (!file || !existsSync(file)) { io.err("validate <file>: file not found"); return 1; }
       const errs = await validateWorkflow(JSON.parse(readFileSync(file, "utf8")));
-      for (const e of errs) console.error(`invalid: ${e}`);
-      if (!errs.length) console.log("ok");
+      for (const e of errs) io.err(`invalid: ${e}`);
+      if (!errs.length) io.out("ok");
       return errs.length ? 1 : 0;
     }
-    if (cmd === "install" || cmd === "publish" || cmd === "status") return await remote(cmd, o.pos[0], o);
-    console.error("usage: workflow.ts validate <file> | install|publish <file> | status --w6w <url> --project <p> --token-file <path> [--var k=v] [--connection ref=id] [--apply]");
+    if (cmd === "install" || cmd === "publish" || cmd === "status") return await remote(cmd, o.pos[0], o, io);
+    io.err("usage: workflow.ts validate <file> | install|publish <file> | status --w6w <url> --project <p> --token-file <path> [--var k=v] [--connection ref=id] [--apply]");
     return 1;
-  } catch (e) { console.error((e as Error).message); return 1; }
+  } catch (e) { io.err((e as Error).message); return 1; }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = await main(process.argv.slice(2));
