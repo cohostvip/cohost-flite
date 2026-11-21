@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { validateWorkflow } from "../scripts/workflow.ts";
 
@@ -50,4 +53,72 @@ test("--token is rejected and install dry-run sends nothing", () => {
   assert.equal(dry.status, 0);
   assert.match(String(dry.stdout), /^POST http:\/\/127\.0\.0\.1:1\/projects\/p\/workflows/);
   assert.match(String(dry.stdout), /dry run/);
+});
+
+const run = (...a: string[]) => spawnSync("node", ["scripts/workflow.ts", ...a]);
+
+test("missing --w6w / --project / --token-file is refused", () => {
+  const full = ["--w6w", "http://127.0.0.1:9", "--project", "p", "--token-file", "/dev/null"];
+  for (const drop of ["--w6w", "--project", "--token-file"]) {
+    const i = full.indexOf(drop);
+    const args = full.filter((_, j) => j !== i && j !== i + 1);
+    for (const cmd of ["install", "publish", "status"]) {
+      const r = run(cmd, FILE, ...args);
+      assert.notEqual(r.status, 0, `${cmd} without ${drop}`);
+      assert.match(String(r.stderr), /needs --w6w/);
+    }
+  }
+});
+
+test("--token with a reachable server: nonzero and no request", async () => {
+  const hits: string[] = [];
+  const srv = createServer((req, res) => { hits.push(`${req.method} ${req.url}`); res.end("{}"); });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${(srv.address() as any).port}`;
+  const r = spawnSync("node", ["scripts/workflow.ts", "install", FILE, "--token", "sekret", "--w6w", url, "--project", "p", "--apply"]);
+  srv.close();
+  assert.notEqual(r.status, 0);
+  assert.deepEqual(hits, []);
+  assert.ok(!String(r.stdout).includes("sekret") && !String(r.stderr).includes("sekret"));
+});
+
+test("dry run makes no request; --apply sends once with bearer from file, token never printed", async () => {
+  const hits = [] as Array<{ m?: string; u?: string; auth?: string; body: string }>;
+  const srv = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => { hits.push({ m: req.method, u: req.url, auth: req.headers.authorization, body }); res.end("{}"); });
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+  const url = `http://127.0.0.1:${(srv.address() as any).port}`;
+  const dir = mkdtempSync(join(tmpdir(), "wf-"));
+  const tf = join(dir, "tok");
+  writeFileSync(tf, "s3cr3t-token\n");
+  const base = ["--w6w", url, "--project", "p", "--token-file", tf];
+  const exec = (...a: string[]) => new Promise<{ code: number | null; out: string }>((resolve) => {
+    const c = spawn("node", ["scripts/workflow.ts", ...a]);
+    let out = "";
+    c.stdout.on("data", (d) => (out += d));
+    c.stderr.on("data", (d) => (out += d));
+    c.on("close", (code) => resolve({ code, out }));
+  });
+  for (const cmd of ["install", "publish"]) {
+    const dry = await exec(cmd, FILE, ...base, "--var", "env=sandbox");
+    assert.equal(dry.code, 0);
+    assert.match(dry.out, /^POST /);
+  }
+  assert.equal(hits.length as number, 0, "no request without --apply");
+  const pub = await exec("publish", FILE, ...base, "--apply");
+  assert.equal(pub.code, 0);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].m, "POST");
+  assert.match(hits[0].u!, /^\/projects\/p\/workflows\/.+\/publish$/);
+  assert.equal(hits[0].auth, "Bearer s3cr3t-token");
+  assert.ok(!pub.out.includes("s3cr3t-token"));
+  srv.close();
+});
+
+test("no process.env in the script and no credentials in the JSON", () => {
+  assert.ok(!/process\.env/.test(readFileSync("scripts/workflow.ts", "utf8").replace(/^\/\/.*$/gm, "")));
+  assert.ok(!/(bearer|secret|token"\s*:|apiKey|password)/i.test(readFileSync(FILE, "utf8")));
 });

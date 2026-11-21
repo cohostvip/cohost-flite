@@ -144,7 +144,6 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
   } else path = `${base}/flite-sales-channel`;
   console.log(`${method} ${path}`);
   if (!o.apply && method !== "GET") { console.log("dry run (pass --apply to send)"); return 0; }
-  if (!o.apply) { console.log("dry run (pass --apply to send)"); return 0; }
   const token = readFileSync(tokenFile, "utf8").trim();
   const res = await fetch(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body });
   console.log(`status ${res.status}`);
