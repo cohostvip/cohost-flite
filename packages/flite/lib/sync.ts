@@ -136,6 +136,8 @@ export interface MappingPlan {
   storedListingId: string | undefined;
   tickets: TicketPlan[];
   warnings: string[];
+  /** Event mapping records exist but none carries a usable `labels.id`: fail closed, never create. */
+  unusableEventMapping: boolean;
 }
 
 /** Resolve every Flite id from `desired.mappings` alone. */
@@ -155,7 +157,8 @@ export function planMappings(desired: DesiredState): MappingPlan {
       storedListingId: choice.storedListingId,
     };
   });
-  return { fliteEventId: event.id, storedListingId: event.storedListingId, tickets, warnings };
+  const unusableEventMapping = event.id === undefined && (desired.mappings?.event?.length ?? 0) > 0;
+  return { fliteEventId: event.id, storedListingId: event.storedListingId, tickets, warnings, unusableEventMapping };
 }
 
 /** A registration with every label field set. */

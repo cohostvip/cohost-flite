@@ -171,6 +171,22 @@ test("event null ⇒ zero requests, errors reported", async () => {
   assert.deepEqual(out.errors, ["no tz"]);
 });
 
+test("mapped publish with event null ⇒ zero requests, errors from desired surfaced", async () => {
+  const { ctx, requests } = context([], true);
+  const out = await syncEvent.execute({ desired: mapped({ event: null, errors: [{ message: "no zip" }] }), expectedEnv: "sandbox" }, ctx);
+  assert.equal(requests.length, 0);
+  assert.deepEqual(out.errors, ["no zip"]);
+});
+
+test("event mapping without labels.id ⇒ error, zero creates", async () => {
+  const { ctx, requests } = context([], true);
+  const d = desired({ event: evFields, mappings: { event: [{ labels: { eventId: "x" } } as never], tickets: {} } });
+  const out = await syncEvent.execute({ desired: d, expectedEnv: "sandbox" }, ctx);
+  assert.equal(requests.length, 0);
+  assert.equal(out.errors.length, 1);
+  assert.match(out.errors[0], /labels\.id/);
+});
+
 test("publish on mapped event: read first, no create, nothing to do when equal", async () => {
   const { ctx, requests } = context([remoteEvent()], true);
   const out = await syncEvent.execute({ desired: mapped({ tickets: [tkt("t1", { capacity: 50 })] }), expectedEnv: "sandbox" }, ctx);

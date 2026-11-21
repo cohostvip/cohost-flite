@@ -65,6 +65,12 @@ export default {
     const client = new FliteClient(ctx);
     const mode = desired.mode;
     if (mode === "noop") return out;
+    if (plan.unusableEventMapping) {
+      out.errors.push("event mapping present but has no usable labels.id; refusing to create or write");
+      return out;
+    }
+    // Event-level conversion failure: errors only, zero requests.
+    if (mode === "publish" && !desired.event) return out;
 
     // After the first successful create, nothing may throw: failures are reported in `errors`.
     const attempt = async (op: string, target: string, detail: Record<string, unknown>, run: () => Promise<unknown>) => {
