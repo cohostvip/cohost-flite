@@ -470,7 +470,7 @@ function stopReopen(label: string, what: string, off: (m: Matrix, sc: Scenario) 
 }
 
 const R4 = stopReopen("r4", "the event is removed (unlisted) from the channel",
-  async (m, sc) => { await m.h.cohostReq("DELETE", `/company/sales-channels/${m.channelId}/events/${sc.eventId}`); return "channelEvent.unlisted"; },
+  async (m, sc) => { await m.h.cohostReq("DELETE", `/events/${sc.eventId}/channels/${m.channelId}`); return "channelEvent.unlisted"; },
   async (m, sc) => { await m.h.cohostReq("PUT", `/events/${sc.eventId}/channels/${m.channelId}`, {}); return "channelEvent.listed"; });
 
 const R5 = stopReopen("r5", "the channel listing is hidden",
