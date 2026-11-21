@@ -622,7 +622,181 @@ const R9: RowFn = async (m) => {
   };
 };
 
-const ROW_FNS: Record<string, RowFn> = { R1, R2, R3, R4, R5, R6, R7, R8, R9 };
+// ---- R10-R13: ticket lifecycle, capacity, cross-company, unsupported tickets ----
+/** Ticket-triggered cycle: one `ticket_changed` ping for a ticket of the event, then its single run. */
+async function tcycle(m: Matrix, eventId: string, ticketId: string, action: "offering.created" | "offering.updated" | "offering.deleted") {
+  const before = await m.runIds();
+  await m.ping("ticket_changed", action, `/events/${eventId}/tickets/${ticketId}`);
+  const run = (await m.waitRuns(before, 1))[0];
+  return { run, out: m.syncOut(run) };
+}
+const patchTicket = (m: Matrix, eventId: string, ticketId: string, ticket: Record<string, unknown>) => m.h.cohostReq("PATCH", `/events/${eventId}/tickets/${ticketId}`, { ticket, context: {} });
+const tmap = (rb: any): Record<string, any> => Object.fromEntries((rb?.tickets ?? []).map((t: any) => [t.ticketName, t]));
+const avail = (rb: any) => (rb?.tickets ?? []).map((t: any) => `${t.ticketName}=${t.availability}`).join(",");
+
+/** R10 ticket add / remove / hidden / sold-out: add maps a new Flite ticket; every other change closes ("false") and never deletes. */
+const R10: RowFn = async (m) => {
+  const sc = await m.createScenario("r10", TWO);
+  return {
+    expected: `${sc.name}: first publish => GA + VIP "true". (a) a new ticket Late is added in Cohost => run succeeds env=sandbox, exactly 1 create-ticket, a ticket registration (RMS mapping) for it, Flite has 3 tickets; (b) VIP status hidden => VIP "false"; (c) GA status sold-out => GA "false"; (d) Late is removed (DELETE ticket) => Late "false". After every step all 3 Flite tickets still exist with the same ids (never deleted), no create beyond (a), remote event count stays 1; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const runIds = [f.run.runId]; const rbs: Record<string, unknown> = {}; const seen: string[] = [];
+      let ids = f.ticketIds;
+      const check = async (label: string, r: { run: any; out: any }, wantCreates: number, wantAvail: Record<string, string>, nTickets: number) => {
+        runIds.push(r.run.runId); okRun(r.run, r.out, p, label);
+        const creates = ops(r.out).filter((o) => o === "create-ticket").length;
+        if (creates !== wantCreates) p.push(`${label}: ${creates} create-ticket ops, wanted ${wantCreates}`);
+        if (creates !== wantCreates) {
+          const mapped = Object.keys(r.run?.nodes?.snapshot?.output?.mappings?.tickets ?? {});
+          const unmapped = ((r.run?.nodes?.desired?.output?.desired?.tickets ?? []) as any[]).filter((t) => !mapped.includes(t.ticketId)).map((t) => `${t.fields?.ticketName}(${t.availability})`);
+          p.push(`${label}: diagnostic: desired tickets with no mapping in the snapshot: [${unmapped.join(",")}] (snapshot mappings cover ${mapped.length} ticket(s))`);
+        }
+        if (ops(r.out).some((o) => o.startsWith("create") && o !== "create-ticket")) p.push(`${label}: unexpected create ${ops(r.out).join(",")}`);
+        const rb = compact(await m.fliteEvent(f.fliteId)); rbs[label] = rb;
+        if (rb.tickets.length !== nTickets) p.push(`${label}: flite has ${rb.tickets.length} tickets, wanted ${nTickets} (a ticket was deleted or duplicated)`);
+        const have = tmap(rb);
+        for (const [name, want] of Object.entries(wantAvail)) if (have[name]?.availability !== want) p.push(`${label}: ${name} availability ${have[name]?.availability}, wanted ${want}`);
+        const got: string[] = rb.tickets.map((t: any) => t._id);
+        if (!ids.every((i) => got.includes(i))) p.push(`${label}: an earlier Flite ticket id vanished`);
+        ids = got.slice().sort();
+        seen.push(`${label}: ops=[${ops(r.out).join("+") || "-"}] ${avail(rb)}`);
+        return rb;
+      };
+      // (a) add
+      const late = (await m.h.cohostReq("POST", `/events/${sc.eventId}/tickets`, { ticket: { name: "Late", type: "admission", category: "general", priceCategory: "paid", capacity: 30, maximumQuantity: 10, costs: { cost: "USD,1500" }, status: "live" } }));
+      const lateId = Object.keys(late?.data?.ids ?? {})[0];
+      if (!lateId) return done(["ticket Late create returned no id", ...p], "", runIds, null);
+      const a = await tcycle(m, sc.eventId, lateId, "offering.created");
+      const rbA = await check("add", a, 1, { GA: "true", VIP: "true", Late: "true" }, 3);
+      if (!((a.out?.registrations ?? []) as any[]).some((r) => r.labels?.kind === "ticket" && JSON.stringify(r).includes(lateId))) p.push("add: no ticket registration for the new ticket");
+      if (Number(tmap(rbA).Late?.ticketPrice) !== 15) p.push(`add: Late price ${tmap(rbA).Late?.ticketPrice}`);
+      // (b) hidden
+      const vip = sc.tickets.find((t) => t.name === "VIP")!; const ga = sc.tickets.find((t) => t.name === "GA")!;
+      await patchTicket(m, sc.eventId, vip.id, { status: "hidden" });
+      await check("hidden", await tcycle(m, sc.eventId, vip.id, "offering.updated"), 0, { GA: "true", VIP: "false", Late: "true" }, 3);
+      // (c) sold-out
+      await patchTicket(m, sc.eventId, ga.id, { status: "sold-out" });
+      await check("sold-out", await tcycle(m, sc.eventId, ga.id, "offering.updated"), 0, { GA: "false", VIP: "false", Late: "true" }, 3);
+      // (d) remove
+      await m.h.cohostReq("DELETE", `/events/${sc.eventId}/tickets/${lateId}`);
+      await check("removed", await tcycle(m, sc.eventId, lateId, "offering.deleted"), 0, { GA: "false", VIP: "false", Late: "false" }, 3);
+      const cnt = await m.fliteCount(sc.name); if (cnt !== 1) p.push(`remote count ${cnt}`);
+      return done(p, `${seen.join("; ")}; remote count ${cnt}; env=sandbox`, runIds, { eventId: f.fliteId, remoteCount: cnt, lateCohostTicketId: lateId, ...rbs });
+    },
+  };
+};
+
+/** R11 capacity: Flite capacity = Cohost capacity - sold. A sale cannot be created through the slot-2 API, so the partial-sale half is RECORDED, not proven. */
+const R11: RowFn = async (m) => {
+  const sc = await m.createScenario("r11", TWO);
+  return {
+    expected: `${sc.name}: first publish => Flite capacity GA 50, VIP 20 (sold 0). Reducing GA capacity to 40 => Flite GA capacity 40 (= 40 - sold 0), then to 5 => 5, availability stays "true", ticket ids unchanged, only update-ticket ops. Partial sale: no slot-2 API route can create a sale (POST /orders 403, POST /events/:id/orders 404, PATCH ticket quantitySold ignored, POST attendees needs an existing attendee), so the "capacity - sold" arithmetic with sold > 0 is NOT driven live; status is RECORDED, not PASS; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const runIds = [f.run.runId]; const rbs: Record<string, unknown> = {}; const seen: string[] = [];
+      const ga = sc.tickets.find((t) => t.name === "GA")!;
+      const first = tmap(f.remote);
+      if (first.GA?.capacity !== 50 || first.VIP?.capacity !== 20) p.push(`first publish capacities GA ${first.GA?.capacity} VIP ${first.VIP?.capacity}`);
+      for (const cap of [40, 5]) {
+        await patchTicket(m, sc.eventId, ga.id, { capacity: cap });
+        const r = await tcycle(m, sc.eventId, ga.id, "offering.updated"); const label = `cap${cap}`;
+        runIds.push(r.run.runId); okRun(r.run, r.out, p, label);
+        const rb = compact(await m.fliteEvent(f.fliteId)); rbs[label] = rb; const have = tmap(rb);
+        if (have.GA?.capacity !== cap - (have.GA?.sold ?? 0)) p.push(`${label}: Flite GA capacity ${have.GA?.capacity} sold ${have.GA?.sold}, wanted ${cap} - sold`);
+        if (have.GA?.availability !== "true") p.push(`${label}: GA availability ${have.GA?.availability}`);
+        if (have.VIP?.capacity !== 20) p.push(`${label}: VIP capacity ${have.VIP?.capacity}`);
+        if (rb.tickets.map((t: any) => t._id).sort().join() !== f.ticketIds.join()) p.push(`${label}: ticket ids changed`);
+        if (ops(r.out).some((o) => o !== "update-ticket")) p.push(`${label}: ops ${ops(r.out).join(",")}`);
+        seen.push(`${label}: Flite GA capacity ${have.GA?.capacity} sold ${have.GA?.sold} ops=[${ops(r.out).join("+") || "-"}]`);
+      }
+      return done(p, `${seen.join("; ")}; partial-sale half not drivable (no slot-2 sale route) => capacity - sold with sold>0 only covered by T1 unit tests; env=sandbox`, runIds, { eventId: f.fliteId, ...rbs }, { recorded: p.length === 0 });
+    },
+  };
+};
+
+/** Flite staging event count over every page of get-events-all (null if more than 30 pages) + the number of events carrying this run's tag. */
+async function fliteCounts(m: Matrix): Promise<{ total: number | null; tagged: number }> {
+  const auth = await (m as any).fliteAuth();
+  let total: number | null = 0;
+  for (let page = 1; ; page++) {
+    if (page > 30) { total = null; break; }
+    const r = await m.h.fliteGet(`${FLITE_STAGING}/get-events-all?page=${page}&limit=100`, auth);
+    const n = ((r?.data ?? []) as any[]).length; total += n;
+    if (n < 100) break;
+  }
+  const tg = await m.h.fliteGet(`${FLITE_STAGING}/get-events-all?page=1&limit=100&search=${encodeURIComponent(m.tag)}`, auth);
+  return { total, tagged: ((tg?.data ?? []) as any[]).length };
+}
+const nodeStates = (run: any) => Object.fromEntries(Object.entries(run?.nodes ?? {}).map(([k, v]: [string, any]) => [k, v?.status ?? "?"]));
+
+/** R12 cross-company: an event the connection's company cannot read => run failed, no Flite write. */
+const R12: RowFn = async (m) => {
+  const foreign = `fscforeign${rid()}${rid()}`;
+  return {
+    expected: `a channel ping for event ${foreign}, which the connection's company (acme-corp) cannot read (the slot-2 seed has only acme-corp events, a second auth user gets 403 on every route and Firestore cannot be seeded, so a foreign-company event is represented by an id the API does not serve to this company: the snapshot's owner read answers 403/404, the documented cross-company negative) => the run ends failed at the snapshot node; the desired/sync/register nodes never run (no sync output); Flite staging event count (total, and carrying this run's tag) is the same before and after; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const own = await m.h.cohostReq("GET", `/events/${foreign}`).then(() => "readable", (e) => (e as Error).message);
+      if (own === "readable") p.push("the foreign id is readable by the connection's company; row is not a cross-company probe");
+      const before = await fliteCounts(m);
+      const r = await m.cycle(foreign, "channelEvent.listed");
+      const after = await fliteCounts(m);
+      const states = nodeStates(r.run);
+      if (r.run.status !== "failed") p.push(`run status ${r.run.status}, wanted failed`);
+      if (states.snapshot !== "failed") p.push(`snapshot node ${states.snapshot}, wanted failed`);
+      for (const n of ["desired", "sync", "register"]) if (states[n] && !["skipped", "pending", "not_run", "cancelled", "canceled"].includes(String(states[n]))) p.push(`${n} node ${states[n]}, wanted not run`);
+      if (r.out) p.push(`sync produced output ${JSON.stringify(r.out).slice(0, 80)}`);
+      if (JSON.stringify(before) !== JSON.stringify(after)) p.push(`Flite counts changed ${JSON.stringify(before)} -> ${JSON.stringify(after)}`);
+      return done(p, `run ${r.run.runId} status=${r.run.status}, nodes ${JSON.stringify(states)}, no sync output, owner read of the id: ${own}; Flite staging counts before ${JSON.stringify(before)} after ${JSON.stringify(after)} (the workflow's own Flite calls run inside w6w and are not in flite-requests.log; the run graph plus the unchanged counts are the zero-write evidence)`, [r.run.runId], { foreignEventId: foreign, ownerRead: own, before, after, nodes: states });
+    },
+  };
+};
+
+/** R13 non-USD and donation tickets: the run errors for them, no Flite ticket is created for them; the valid ticket still publishes. */
+const R13: RowFn = async (m) => {
+  const sc = await m.createScenario("r13", [{ name: "GA", cost: 1000, capacity: 50 }]);
+  const mk = async (name: string, priceCategory: string, cost: string) => {
+    const r = await m.h.cohostReq("POST", `/events/${sc.eventId}/tickets`, { ticket: { name, type: "admission", category: "general", priceCategory, capacity: 10, maximumQuantity: 10, costs: { cost }, status: "live" } });
+    const id = Object.keys(r?.data?.ids ?? {})[0]; if (!id) throw new Error(`${name} create returned no id`); return id;
+  };
+  const eurId = await mk("EUR", "paid", "EUR,1000");
+  const donId = await mk("Donation", "donation", "USD,0");
+  const listed = await m.channelTickets(sc.eventId);
+  return {
+    expected: `${sc.name}: tickets GA (USD 10.00), EUR (EUR 10.00) and Donation (priceCategory donation) on one event => the run ends failed (the report node throws on sync errors) with errors naming the EUR ticket (currency EUR is not USD) and the donation ticket; Flite has the event with exactly 1 ticket (GA, 10.00); no Flite ticket named EUR or Donation and no ticket registration for them; a second ping creates none either; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const r1 = await m.cycle(sc.eventId, "channelEvent.listed");
+      const out = r1.out; const runIds = [r1.run.runId];
+      if (r1.run.status !== "failed") p.push(`run status ${r1.run.status}, wanted failed`);
+      if (out?.env !== "sandbox") p.push(`env=${out?.env}`);
+      const errs: string[] = (out?.errors ?? []).map(String);
+      if (!errs.some((e) => e.includes(eurId) && /EUR/.test(e))) p.push(`no error for the EUR ticket: ${JSON.stringify(errs).slice(0, 200)}`);
+      if (!errs.some((e) => e.includes(donId) && /donation/i.test(e))) p.push(`no error for the donation ticket: ${JSON.stringify(errs).slice(0, 200)}`);
+      const regs = ((out?.registrations ?? []) as any[]).filter((r) => r.labels?.kind === "ticket");
+      if (regs.length !== 1) p.push(`${regs.length} ticket registrations, wanted 1 (GA only)`);
+      if (regs.some((r) => JSON.stringify(r).includes(eurId) || JSON.stringify(r).includes(donId))) p.push("a registration references the EUR/donation ticket");
+      const fliteId: string = out?.eventId ?? ""; let rb: any = null;
+      if (!fliteId) p.push("sync output has no eventId"); else {
+        rb = compact(await m.fliteEvent(fliteId));
+        if (rb.tickets.length !== 1 || rb.tickets[0].ticketName !== "GA" || Number(rb.tickets[0].ticketPrice) !== 10) p.push(`Flite tickets ${JSON.stringify(rb.tickets.map((t: any) => `${t.ticketName}@${t.ticketPrice}`))}, wanted only GA@10`);
+      }
+      const r2 = await m.cycle(sc.eventId, "channelEvent.changed"); runIds.push(r2.run.runId);
+      if (ops(r2.out).some((o) => o.startsWith("create"))) p.push(`second ping created ${ops(r2.out).join(",")}`);
+      const rb2 = fliteId ? compact(await m.fliteEvent(fliteId)) : null;
+      if (rb2 && rb2.tickets.length !== 1) p.push(`after second ping Flite has ${rb2.tickets.length} tickets`);
+      const cnt = await m.fliteCount(sc.name); if (cnt !== 1) p.push(`remote count ${cnt}`);
+      return done(p, `run ${r1.run.runId} ${r1.run.status}: ${errs.length} error(s) [${errs.map((e) => e.slice(0, 70)).join(" | ")}]; Flite event ${fliteId} has tickets ${(rb?.tickets ?? []).map((t: any) => `${t.ticketName}@${t.ticketPrice}`).join(",")}; 2nd ping ops=[${ops(r2.out).join("+") || "-"}]; remote count ${cnt}; channel view tickets ${listed.map((t) => `${t.name}:${t.cost}`).join(",")}`, runIds, { eventId: fliteId, remoteCount: cnt, eurTicket: eurId, donationTicket: donId, errors: errs, ...rb2 });
+    },
+  };
+};
+
+const ROW_FNS: Record<string, RowFn> = { R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R13 };
 
 export async function matrix(h: Harness): Promise<number> {
   if (!h.o.apply) { console.log("dry-run: matrix drives live slot-2 + Flite staging; pass --apply"); return 0; }
