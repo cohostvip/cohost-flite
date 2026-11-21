@@ -105,6 +105,8 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
     }
     if (seen.has(report.id)) errs.push("terminal step reachable without passing register");
   }
+  if (typeof wf.id !== "string" || !WF_ID.test(wf.id)) errs.push(`id must match ${WF_ID} (server grammar)`);
+  if (typeof wf.key !== "string" || !WF_KEY.test(wf.key)) errs.push("key must be an account slug [a-z0-9-]");
   const text = JSON.stringify(wf);
   if (/"(token|apiKey|password|secret|accessToken)"\s*:/i.test(text)) errs.push("credential-looking key in workflow");
   for (const [ref, c] of Object.entries<Json>(wf.connections ?? {})) {
@@ -136,14 +138,27 @@ function parseArgs(argv: string[]) {
 export interface Io { fetch: typeof fetch; out: (s: string) => void; err: (s: string) => void }
 const realIo: Io = { fetch: (...a) => fetch(...a), out: (s) => console.log(s), err: (s) => console.error(s) };
 
+/** Server id grammar (`POST /workflows`, w6w endpoints.json workflows.create): `^wf_[A-Za-z0-9-]{1,64}$`. */
+const WF_ID = /^wf_[A-Za-z0-9-]{1,64}$/;
+/** Account-slug key grammar (`[a-z0-9-]`, no underscore — w6w admin id-or-key.ts). */
+const WF_KEY = /^[a-z0-9-]+$/;
+const DEFAULT_ID = "wf_flite-sales-channel";
+
+/**
+ * Real w6w surface (admin/callable-routes.ts + admin/triggers.ts): `POST /workflows` upserts a
+ * definition (optional `?project=`), `POST /workflows/:id/publish` publishes and reconciles one
+ * subscription per trigger node, and `GET /workflows/:id[/subscriptions|/runs]` reads it back.
+ * Paths are root-relative to --w6w; there is no `/projects/<p>/` prefix.
+ */
 async function remote(cmd: string, file: string | undefined, o: ReturnType<typeof parseArgs>, io: Io): Promise<number> {
   const { w6w, project, "token-file": tokenFile } = o.flags;
-  if (!w6w || !project || !tokenFile) throw new Error(`${cmd} needs --w6w <url> --project <p> --token-file <path>`);
-  const base = `${w6w.replace(/\/+$/, "")}/projects/${encodeURIComponent(project)}/workflows`;
-  let method = "GET";
-  let path = base;
-  let body: string | undefined;
-  if (cmd !== "status") {
+  if (!w6w || !tokenFile) throw new Error(`${cmd} needs --w6w <url> --token-file <path> [--project <p>]`);
+  const base = `${w6w.replace(/\/+$/, "")}/workflows`;
+  const calls: Array<{ method: string; path: string; body?: string }> = [];
+  if (cmd === "status") {
+    const id = o.flags.id ?? DEFAULT_ID;
+    for (const suffix of ["", "/subscriptions", "/runs"]) calls.push({ method: "GET", path: `${base}/${encodeURIComponent(id)}${suffix}` });
+  } else {
     if (!file) throw new Error(`${cmd} needs a workflow file`);
     const wf = JSON.parse(readFileSync(file, "utf8")) as Json;
     const errs = await validateWorkflow(wf);
@@ -157,16 +172,20 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
       if (!wf.connections?.[ref]) throw new Error(`unknown --connection ref ${ref}`);
       wf.connections[ref].connection = id;
     }
-    method = "POST";
-    path = cmd === "publish" ? `${base}/${wf.key}/publish` : base;
-    body = JSON.stringify(wf);
-  } else path = `${base}/flite-sales-channel`;
-  io.out(`${method} ${path}`);
-  if (!o.apply && method !== "GET") { io.err("dry run (pass --apply to send)"); return 0; }
+    if (cmd === "publish") calls.push({ method: "POST", path: `${base}/${encodeURIComponent(wf.id)}/publish` });
+    else calls.push({ method: "POST", path: project ? `${base}?project=${encodeURIComponent(project)}` : base, body: JSON.stringify(wf) });
+  }
+  const mutating = calls.some((c) => c.method !== "GET");
+  for (const c of calls) io.out(`${c.method} ${c.path}`);
+  if (!o.apply && mutating) { io.err("dry run (pass --apply to send)"); return 0; }
   const token = readFileSync(tokenFile, "utf8").trim();
-  const res = await io.fetch(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body });
-  io.err(`status ${res.status}`);
-  return res.ok ? 0 : 1;
+  let ok = true;
+  for (const c of calls) {
+    const res = await io.fetch(c.path, { method: c.method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: c.body });
+    io.err(`status ${res.status}`);
+    ok = ok && res.ok;
+  }
+  return ok ? 0 : 1;
 }
 
 export async function main(argv: string[], io: Io = realIo): Promise<number> {
@@ -183,7 +202,7 @@ export async function main(argv: string[], io: Io = realIo): Promise<number> {
       return errs.length ? 1 : 0;
     }
     if (cmd === "install" || cmd === "publish" || cmd === "status") return await remote(cmd, o.pos[0], o, io);
-    io.err("usage: workflow.ts validate <file> | install|publish <file> | status --w6w <url> --project <p> --token-file <path> [--var k=v] [--connection ref=id] [--apply]");
+    io.err("usage: workflow.ts validate <file> | install|publish <file> | status --w6w <url> --token-file <path> [--project <p>] [--id <wf_id>] [--var k=v] [--connection ref=id] [--apply]");
     return 1;
   } catch (e) { io.err((e as Error).message); return 1; }
 }
