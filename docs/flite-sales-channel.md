@@ -81,7 +81,7 @@ Notes:
 - The token comes only from `--token-file`; `--token` is rejected. The script never reads `process.env`.
 - Required variables: `channelId`, `env` (`sandbox|production`), `org`; `currency` defaults to `USD`.
 - Bind the Flite connection to the sandbox account for `env=sandbox`. The env guard makes a mismatch fail before any request.
-- The REST paths used by install/publish/status (`/projects/<p>/workflows[/<key>/publish]`) are unconfirmed placeholders. Confirm them against the real w6w API before using `--apply`.
+- Install/publish/status use the confirmed w6w root paths (`POST /workflows`, `POST /workflows/:id/publish`, `GET /workflows/:id[/subscriptions|/runs]`); verified live in T3.
 - The app catalog must contain `vip.cohost.w6w` (with `get-channel-event-snapshot`, `register-urn-mappings`, and the two triggers), `vip.cohost.flite` and `vip.cohost.transformers.flite`.
 
 ## Install notes (T3 sandbox E2E)
