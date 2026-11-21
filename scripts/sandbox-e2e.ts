@@ -309,6 +309,18 @@ export class Matrix {
     const r = await this.h.fliteGet(`${FLITE_STAGING}/get-event-tickets-info?eventId=${encodeURIComponent(fliteEventId)}`, await this.fliteAuth());
     return r?.data;
   }
+  /** Number of Flite staging events whose name is exactly `name` (get-events-all?search=). */
+  async fliteCount(name: string): Promise<number> {
+    const r = await this.h.fliteGet(`${FLITE_STAGING}/get-events-all?page=1&limit=50&search=${encodeURIComponent(name)}`, await this.fliteAuth());
+    return ((r?.data ?? []) as any[]).filter((e) => (e.eventName ?? e.name) === name).length;
+  }
+  /** Fire one channel ping for the scenario's listing and wait for its single run. */
+  async cycle(eventId: string, action: "channelEvent.listed" | "channelEvent.changed" | "channelEvent.unlisted" = "channelEvent.changed"): Promise<{ run: any; out: any }> {
+    const before = await this.runIds();
+    await this.pingListing(eventId, action);
+    const run = (await this.waitRuns(before, 1))[0];
+    return { run, out: this.syncOut(run) };
+  }
   /** The Cohost system resource a Flite URN maps to (RMS), or null. */
   async mappingFor(mappedUrn: string): Promise<any | null> {
     try {
@@ -355,7 +367,147 @@ const R1: RowFn = async (m) => {
   };
 };
 
-const ROW_FNS: Record<string, RowFn> = { R1 };
+
+// ---- shared row plumbing ----
+type Step = { observed: string; pass: boolean; runIds?: string[]; fliteReadback?: unknown; recorded?: boolean };
+const okRun = (run: any, out: any, p: string[], tag: string) => {
+  if (run.status !== "succeeded") p.push(`${tag}: run status ${run.status}`);
+  if (out?.env !== "sandbox") p.push(`${tag}: env=${out?.env}`);
+  if (out?.errors?.length) p.push(`${tag}: errors=${JSON.stringify(out.errors)}`);
+};
+const ops = (out: any): string[] => ((out?.operations ?? []) as any[]).map((o) => o.op);
+const SYNTH = "triggers fired by synthetic ping (slot-2 has no webhook dispatcher)";
+const TWO = [{ name: "GA", cost: 1000, capacity: 50 }, { name: "VIP", cost: 2500, capacity: 20 }];
+const done = (p: string[], ok: string, runIds: string[], fliteReadback: unknown, extra: Partial<Step> = {}): Step => ({ observed: p.length ? p.join("; ") : ok, pass: p.length === 0, runIds, fliteReadback, ...extra });
+
+/** First publish used as setup by R2/R4/R5/R6 (must itself succeed; failures surface as problems of the row). */
+async function firstPublish(m: Matrix, sc: Scenario, p: string[]) {
+  const { run, out } = await m.cycle(sc.eventId, "channelEvent.listed");
+  okRun(run, out, p, "first publish");
+  const fliteId: string = out?.eventId ?? "";
+  const evReg = ((out?.registrations ?? []) as any[]).find((r) => r.labels?.kind === "event");
+  const remote = fliteId ? compact(await m.fliteEvent(fliteId)) : null;
+  return { run, out, fliteId, evReg, remote, ticketIds: (remote?.tickets ?? []).map((t: any) => t._id).sort() as string[] };
+}
+
+/** R2 duplicate delivery: a second ping for the same listing changes nothing remote. */
+const R2: RowFn = async (m) => {
+  const sc = await m.createScenario("r2", TWO);
+  return {
+    expected: `${sc.name}: after the first publish, a duplicate delivery of the same channel ping makes a second run that succeeds with env=sandbox, no create operations, the same Flite event id and ticket ids, and exactly 1 Flite staging event with that name; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      const dup = await m.cycle(sc.eventId, "channelEvent.listed");
+      okRun(dup.run, dup.out, p, "duplicate");
+      if (dup.out?.eventId !== f.fliteId) p.push(`event id changed ${f.fliteId} -> ${dup.out?.eventId}`);
+      const bad = ops(dup.out).filter((o) => o.startsWith("create"));
+      if (bad.length) p.push(`duplicate run created: ${bad.join(",")}`);
+      const after = dup.out?.eventId ? compact(await m.fliteEvent(dup.out.eventId)) : null;
+      if (JSON.stringify(after?.tickets?.map((t: any) => t._id).sort()) !== JSON.stringify(f.ticketIds)) p.push("ticket ids changed");
+      const count = await m.fliteCount(sc.name);
+      if (count !== 1) p.push(`remote event count ${count}`);
+      return done(p, `duplicate run ${dup.run.runId}: ops=[${ops(dup.out).join(",")}], same event ${f.fliteId}, same ${f.ticketIds.length} ticket ids, remote count ${count}, env=sandbox`, [f.run.runId, dup.run.runId], { eventId: f.fliteId, remoteCount: count, ...after });
+    },
+  };
+};
+
+/** R3 concurrent first publish: two simultaneous first pings; the remote count is recorded (>1 = residual race). */
+const R3: RowFn = async (m) => {
+  const sc = await m.createScenario("r3", TWO);
+  return {
+    expected: `${sc.name}: two first-publish pings fired concurrently; both runs finish; the number of Flite staging events named ${sc.name} is RECORDED (1 = PASS; >1 = documented residual race, status RECORDED); ${SYNTH}`,
+    step: async () => {
+      const before = await m.runIds();
+      await Promise.all([m.pingListing(sc.eventId, "channelEvent.listed"), m.pingListing(sc.eventId, "channelEvent.listed")]);
+      const runs = await m.waitRuns(before, 2);
+      const outs = runs.map((r) => m.syncOut(r));
+      const count = await m.fliteCount(sc.name);
+      const ids = outs.map((o) => o?.eventId ?? "");
+      const sts = runs.map((r) => r.status);
+      return { observed: `remote event count ${count}; runs ${sts.join("/")}; event ids per run [${ids.join(", ")}]; ops [${outs.map((o) => ops(o).join("+")).join(" | ")}]; env [${outs.map((o) => o?.env).join(",")}]${count > 1 ? "; residual: concurrent first publishes are not serialised (no lock between mapping lookup and create)" : ""}`, pass: count === 1 && outs.every((o) => o?.env === "sandbox"), recorded: count > 1 && outs.every((o) => o?.env === "sandbox"), runIds: runs.map((r) => r.runId), fliteReadback: { remoteCount: count, eventIds: ids } };
+    },
+  };
+};
+
+const flip = (remote: any) => ({ ended: remote?.isEventEnd, avail: (remote?.tickets ?? []).map((t: any) => t.availability) });
+
+/** Shared body of R4/R5: stop via `off`, reopen via `on`. */
+function stopReopen(label: string, what: string, off: (m: Matrix, sc: Scenario) => Promise<"channelEvent.unlisted" | "channelEvent.changed">, on: (m: Matrix, sc: Scenario) => Promise<"channelEvent.listed" | "channelEvent.changed">): RowFn {
+  return async (m) => {
+    const sc = await m.createScenario(label, TWO);
+    return {
+      expected: `${sc.name}: after the first publish, ${what} => run succeeds env=sandbox, Flite event ended (isEventEnd true), every ticket availability "false", RMS event mapping kept, remote count 1; then the reverse => SAME Flite event id and ticket ids reopened (isEventEnd false, tickets "true"), remote count still 1; ${SYNTH}`,
+      step: async () => {
+        const p: string[] = [];
+        const f = await firstPublish(m, sc, p);
+        if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+        const offAction = await off(m, sc);
+        const a = await m.cycle(sc.eventId, offAction);
+        okRun(a.run, a.out, p, "stop");
+        const ra = compact(await m.fliteEvent(f.fliteId));
+        if (ra.isEventEnd !== true) p.push(`after stop isEventEnd=${ra.isEventEnd}`);
+        if (ra.tickets.some((t: any) => t.availability !== "false")) p.push(`after stop ticket availability ${JSON.stringify(flip(ra).avail)}`);
+        const mapKept = f.evReg ? await m.mappingFor(f.evReg.mappedUrn) : null;
+        if (!mapKept) p.push("event mapping not found after stop");
+        const c1 = await m.fliteCount(sc.name);
+        if (c1 !== 1) p.push(`count after stop ${c1}`);
+        const onAction = await on(m, sc);
+        const b = await m.cycle(sc.eventId, onAction);
+        okRun(b.run, b.out, p, "reopen");
+        if (b.out?.eventId !== f.fliteId) p.push(`reopen event id ${b.out?.eventId} != ${f.fliteId}`);
+        const rb = compact(await m.fliteEvent(f.fliteId));
+        if (rb.isEventEnd === true) p.push("after reopen still ended");
+        if (JSON.stringify(rb.tickets.map((t: any) => t._id).sort()) !== JSON.stringify(f.ticketIds)) p.push("ticket ids differ after reopen");
+        if (rb.tickets.some((t: any) => t.availability !== "true")) p.push(`after reopen availability ${JSON.stringify(flip(rb).avail)}`);
+        if (ops(b.out).some((o) => o.startsWith("create"))) p.push(`reopen created: ${ops(b.out).join(",")}`);
+        const c2 = await m.fliteCount(sc.name);
+        if (c2 !== 1) p.push(`count after reopen ${c2}`);
+        return done(p, `stop run ${a.run.runId} ops=[${ops(a.out).join(",")}] -> ended=${ra.isEventEnd}, tickets ${JSON.stringify(flip(ra).avail)}, mapping kept (${mapKept?.["-resource.id"] ?? "found"}), count ${c1}; reopen run ${b.run.runId} ops=[${ops(b.out).join(",")}] -> same event ${f.fliteId}, same ticket ids, ended=${rb.isEventEnd}, tickets ${JSON.stringify(flip(rb).avail)}, count ${c2}; env=sandbox`, [f.run.runId, a.run.runId, b.run.runId], { eventId: f.fliteId, afterStop: ra, afterReopen: rb });
+      },
+    };
+  };
+}
+
+const R4 = stopReopen("r4", "the event is removed (unlisted) from the channel",
+  async (m, sc) => { await m.h.cohostReq("DELETE", `/company/sales-channels/${m.channelId}/events/${sc.eventId}`); return "channelEvent.unlisted"; },
+  async (m, sc) => { await m.h.cohostReq("PUT", `/events/${sc.eventId}/channels/${m.channelId}`, {}); return "channelEvent.listed"; });
+
+const R5 = stopReopen("r5", "the channel listing is hidden",
+  async (m, sc) => { await m.h.cohostReq("PATCH", `/company/sales-channels/${m.channelId}/events/${sc.eventId}/listing`, { visibility: "hidden" }); return "channelEvent.changed"; },
+  async (m, sc) => { await m.h.cohostReq("PATCH", `/company/sales-channels/${m.channelId}/events/${sc.eventId}/listing`, { visibility: "visible" }); return "channelEvent.changed"; });
+
+/** R6 owner status walk: draft -> live -> started (hold) -> ended -> canceled. */
+const R6: RowFn = async (m) => {
+  const sc = await m.createScenario("r6", TWO);
+  return {
+    expected: `${sc.name}: after the first publish the owner status walks draft (stop: ended, tickets "false") -> live (reopen, same ids) -> started (hold: stays active, isEventEnd false, tickets "true", D3) -> ended (stop) -> canceled (stop, no-op remote); each run succeeds env=sandbox, no create operations, remote count stays 1; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const runIds = [f.run.runId]; const seen: string[] = []; const readbacks: Record<string, unknown> = {};
+      const walk: Array<[string, boolean, "true" | "false"]> = [["draft", true, "false"], ["live", false, "true"], ["started", false, "true"], ["ended", true, "false"], ["canceled", true, "false"]];
+      for (const [status, wantEnded, wantAvail] of walk) {
+        try { await m.h.cohostReq("PATCH", `/events/${sc.eventId}`, { event: { status }, context: {} }); } catch (e) { p.push(`${status}: PATCH failed ${(e as Error).message}`); continue; }
+        const r = await m.cycle(sc.eventId);
+        runIds.push(r.run.runId);
+        okRun(r.run, r.out, p, status);
+        const rb = compact(await m.fliteEvent(f.fliteId));
+        readbacks[status] = rb;
+        if (Boolean(rb.isEventEnd) !== wantEnded) p.push(`${status}: isEventEnd=${rb.isEventEnd}, wanted ${wantEnded}`);
+        if (rb.tickets.some((t: any) => t.availability !== wantAvail)) p.push(`${status}: availability ${JSON.stringify(flip(rb).avail)}, wanted ${wantAvail}`);
+        if (ops(r.out).some((o) => o.startsWith("create"))) p.push(`${status}: created ${ops(r.out).join(",")}`);
+        seen.push(`${status}[mode=${r.out?.mode} ops=${ops(r.out).join("+") || "-"} ended=${rb.isEventEnd}]`);
+      }
+      const c = await m.fliteCount(sc.name);
+      if (c !== 1) p.push(`remote count ${c}`);
+      return done(p, `${seen.join(" -> ")}; remote count ${c}; env=sandbox`, runIds, { eventId: f.fliteId, remoteCount: c, ...readbacks });
+    },
+  };
+};
+
+const ROW_FNS: Record<string, RowFn> = { R1, R2, R3, R4, R5, R6 };
 
 export async function matrix(h: Harness): Promise<number> {
   if (!h.o.apply) { console.log("dry-run: matrix drives live slot-2 + Flite staging; pass --apply"); return 0; }
