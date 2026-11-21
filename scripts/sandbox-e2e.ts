@@ -321,6 +321,17 @@ export class Matrix {
     const run = (await this.waitRuns(before, 1))[0];
     return { run, out: this.syncOut(run) };
   }
+  /** The channel's view of an event's tickets (GET /events/:id/tickets with x-cohost-channel-id): costs include channel pricing, status "unavailable" while sales are paused. */
+  async channelTickets(eventId: string): Promise<Array<{ id: string; name: string; cost: string; status: string }>> {
+    const r = await fetch(`${this.h.cohostApi}/events/${eventId}/tickets`, { headers: { authorization: `Bearer ${await this.h.cohostBearer()}`, "x-cohost-channel-id": this.channelId } });
+    if (!r.ok) throw new Error(`GET channel tickets -> ${r.status}`);
+    return (((await r.json()) as any).data as any[]).map((t) => ({ id: t.id, name: t.name, cost: t.costs?.cost, status: t.status }));
+  }
+  /** Merge `patch` into the listing's customization (PUT /events/:id/channels/:ch/customization), keeping what is there. */
+  async customize(eventId: string, patch: (c: any) => any): Promise<void> {
+    const cur = (await this.h.cohostReq("GET", `/events/${eventId}/channels/${this.channelId}/customization`))?.data?.customization ?? {};
+    await this.h.cohostReq("PUT", `/events/${eventId}/channels/${this.channelId}/customization`, { customization: patch({ fees: [], ...cur }) });
+  }
   /** The Cohost system resource a Flite URN maps to (RMS), or null. */
   async mappingFor(mappedUrn: string): Promise<any | null> {
     try {
@@ -330,7 +341,7 @@ export class Matrix {
   }
 }
 
-const compact = (e: any) => e && ({ _id: e._id, eventName: e.eventName, isEventEnd: e.isEventEnd, tickets: (e.tickets ?? []).map((t: any) => ({ _id: t._id, ticketName: t.ticketName, ticketPrice: t.ticketPrice, capacity: t.capacity, sold: t.sold, availability: t.availability })) });
+const compact = (e: any) => e && ({ _id: e._id, eventName: e.eventName, description: e.description, isEventEnd: e.isEventEnd, tickets: (e.tickets ?? []).map((t: any) => ({ _id: t._id, ticketName: t.ticketName, ticketPrice: t.ticketPrice, capacity: t.capacity, sold: t.sold, availability: t.availability })) });
 
 type RowFn = (m: Matrix) => Promise<{ expected: string; step: () => Promise<{ observed: string; pass: boolean; runIds?: string[]; fliteReadback?: unknown; recorded?: boolean }> }>;
 
@@ -507,7 +518,111 @@ const R6: RowFn = async (m) => {
   };
 };
 
-const ROW_FNS: Record<string, RowFn> = { R1, R2, R3, R4, R5, R6 };
+/** R7 name + description change; also records what an empty owner description does. */
+const R7: RowFn = async (m) => {
+  const sc = await m.createScenario("r7", TWO);
+  const newName = `${sc.name}-renamed`;
+  const newDesc = `${m.tag} r7 changed description`;
+  return {
+    expected: `${sc.name}: after the first publish the owner renames the event to ${newName} and changes its description to "${newDesc}" => run succeeds env=sandbox with an update-event operation (no create), the Flite readback has eventName and description equal to the new values (description stored by Flite as <p>text</p>), same Flite event id, exactly 1 Flite event named ${newName}; then the owner description is emptied => the observed behaviour (Cohost reply, run ops/errors, Flite description) is RECORDED, not asserted; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const desc0 = f.remote?.description;
+      await m.h.cohostReq("PATCH", `/events/${sc.eventId}`, { event: { name: newName, description: { text: newDesc } }, context: {} });
+      const a = await m.cycle(sc.eventId);
+      okRun(a.run, a.out, p, "rename");
+      if (a.out?.eventId !== f.fliteId) p.push(`event id ${f.fliteId} -> ${a.out?.eventId}`);
+      if (!ops(a.out).includes("update-event")) p.push(`no update-event op: [${ops(a.out).join(",")}]`);
+      if (ops(a.out).some((o) => o.startsWith("create"))) p.push(`rename created: ${ops(a.out).join(",")}`);
+      const ra = compact(await m.fliteEvent(f.fliteId));
+      if (ra.eventName !== newName) p.push(`eventName=${ra.eventName}`);
+      if (String(ra.description ?? "").trim() !== `<p>${newDesc}</p>`) p.push(`description=${JSON.stringify(ra.description)}`); // Flite stores the text as <p>…</p> (the converter's textToHtml)
+      const cNew = await m.fliteCount(newName);
+      if (cNew !== 1) p.push(`count(${newName})=${cNew}`);
+      // empty description: recorded only
+      let emptyNote: string; const runIds = [f.run.runId, a.run.runId]; let rc: any = null;
+      try {
+        await m.h.cohostReq("PATCH", `/events/${sc.eventId}`, { event: { description: { text: "" } }, context: {} });
+        const own: any = (await m.h.cohostReq("GET", `/events/${sc.eventId}`))?.data;
+        const ownerDesc = JSON.stringify(own?.contentBlocks?.find((b: any) => b.designation === "description")?.data ?? own?.description ?? null);
+        const e = await m.cycle(sc.eventId);
+        runIds.push(e.run.runId);
+        rc = compact(await m.fliteEvent(f.fliteId));
+        emptyNote = `Cohost owner description after the empty PATCH ${ownerDesc}; run ${e.run.status} ops=[${ops(e.out).join(",")}] errors=${JSON.stringify(e.out?.errors ?? [])}; Flite description ${JSON.stringify(rc.description)} (was ${JSON.stringify(ra.description)})`;
+      } catch (err) { emptyNote = `owner PATCH or run failed: ${(err as Error).message}`; }
+      return done(p, `rename run ${a.run.runId} ops=[${ops(a.out).join(",")}] -> eventName and description equal, count ${cNew}, same event ${f.fliteId}, env=sandbox; initial Flite description ${JSON.stringify(desc0)}; EMPTY description: ${emptyNote}`, runIds, { eventId: f.fliteId, initial: f.remote, afterRename: ra, afterEmpty: rc });
+    },
+  };
+};
+
+const usd = (cost: string | undefined): number => Number(String(cost ?? "").split(",")[1]) / 100;
+const flitePrices = (r: any): number[] => (r?.tickets ?? []).map((t: any) => Number(t.ticketPrice));
+
+/** R8 base price change, then channel price formula, then an explicit channel price: Flite price = the channel's price. */
+const R8: RowFn = async (m) => {
+  const sc = await m.createScenario("r8", [{ name: "GA", cost: 1000, capacity: 50 }]);
+  const tid = sc.tickets[0].id;
+  return {
+    expected: `${sc.name}: first publish => Flite GA price 10; owner base price -> 12.00 => Flite 12; a 10% markup price formula assigned to the ticket on the channel => Flite 13.2 (= the channel's price read back with x-cohost-channel-id); then an explicit channel price 15.00 => Flite 15; every run succeeds env=sandbox, only update-ticket operations, same Flite ticket id, event count stays 1; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const runIds = [f.run.runId]; const seen: string[] = []; const rbs: Record<string, unknown> = {};
+      const check = async (label: string, want: number) => {
+        const r = await m.cycle(sc.eventId); runIds.push(r.run.runId); okRun(r.run, r.out, p, label);
+        const chan = usd((await m.channelTickets(sc.eventId)).find((t) => t.id === tid)?.cost);
+        const rb = compact(await m.fliteEvent(f.fliteId)); rbs[label] = { channelPrice: chan, ...rb };
+        const got = flitePrices(rb);
+        if (got.length !== 1 || Math.abs(got[0] - want) > 0.001) p.push(`${label}: Flite price ${JSON.stringify(got)}, wanted ${want}`);
+        if (Math.abs(chan - want) > 0.001) p.push(`${label}: channel price ${chan}, wanted ${want}`);
+        if (rb.tickets.map((t: any) => t._id).join() !== f.ticketIds.join()) p.push(`${label}: ticket ids changed`);
+        if (ops(r.out).some((o) => o.startsWith("create"))) p.push(`${label}: created ${ops(r.out).join(",")}`);
+        seen.push(`${label}: channel ${chan} -> Flite ${got.join(",")} ops=[${ops(r.out).join("+") || "-"}]`);
+      };
+      await m.h.cohostReq("PATCH", `/events/${sc.eventId}/tickets/${tid}`, { ticket: { costs: { cost: "USD,1200" } }, context: {} });
+      await check("base price 12", 12);
+      const fm: any = await m.h.cohostReq("POST", "/company/price-formulas", { name: `${m.tag}-r8-markup10`, markupPercent: 10 });
+      const fid = fm?.data?.id as string; if (!fid) throw new Error("price formula create returned no id");
+      await m.customize(sc.eventId, (c) => ({ ...c, pricing: { ...(c.pricing ?? {}), prices: {}, formulas: { [tid]: fid } } }));
+      await check("formula +10%", 13.2);
+      await m.customize(sc.eventId, (c) => ({ ...c, pricing: { ...(c.pricing ?? {}), formulas: {}, prices: { [tid]: "USD,1500" } } }));
+      await check("channel price 15", 15);
+      const cnt = await m.fliteCount(sc.name); if (cnt !== 1) p.push(`remote count ${cnt}`);
+      return done(p, `${seen.join("; ")}; formula ${fid}; remote count ${cnt}; env=sandbox`, runIds, { eventId: f.fliteId, formulaId: fid, remoteCount: cnt, ...rbs });
+    },
+  };
+};
+
+/** R9 channel sales pause: tickets "false", nothing else changes; resume reopens them. */
+const R9: RowFn = async (m) => {
+  const sc = await m.createScenario("r9", TWO);
+  return {
+    expected: `${sc.name}: first publish => both tickets "true"; the organizer pauses sales on the channel (customization salesEnabled false) => run succeeds env=sandbox, every Flite ticket availability "false", the event is not ended, ticket ids unchanged, no creates; resuming => tickets "true" again; remote count stays 1; ${SYNTH}`,
+    step: async () => {
+      const p: string[] = [];
+      const f = await firstPublish(m, sc, p);
+      if (!f.fliteId) return done(["no Flite event after first publish", ...p], "", [f.run.runId], null);
+      const runIds = [f.run.runId]; const rbs: Record<string, unknown> = {}; const seen: string[] = [];
+      for (const [label, on, want] of [["paused", false, "false"], ["resumed", true, "true"]] as const) {
+        await m.customize(sc.eventId, (c) => ({ ...c, salesEnabled: on }));
+        const r = await m.cycle(sc.eventId); runIds.push(r.run.runId); okRun(r.run, r.out, p, label);
+        const rb = compact(await m.fliteEvent(f.fliteId)); rbs[label] = rb;
+        if (rb.tickets.some((t: any) => t.availability !== want)) p.push(`${label}: availability ${JSON.stringify(flip(rb).avail)}, wanted ${want}`);
+        if (rb.isEventEnd === true) p.push(`${label}: event ended`);
+        if (rb.tickets.map((t: any) => t._id).sort().join() !== f.ticketIds.join()) p.push(`${label}: ticket ids changed`);
+        if (ops(r.out).some((o) => o.startsWith("create"))) p.push(`${label}: created ${ops(r.out).join(",")}`);
+        seen.push(`${label}: ops=[${ops(r.out).join("+") || "-"}] tickets ${JSON.stringify(flip(rb).avail)} ended=${rb.isEventEnd}`);
+      }
+      const cnt = await m.fliteCount(sc.name); if (cnt !== 1) p.push(`remote count ${cnt}`);
+      return done(p, `${seen.join("; ")}; remote count ${cnt}; env=sandbox`, runIds, { eventId: f.fliteId, remoteCount: cnt, ...rbs });
+    },
+  };
+};
+
+const ROW_FNS: Record<string, RowFn> = { R1, R2, R3, R4, R5, R6, R7, R8, R9 };
 
 export async function matrix(h: Harness): Promise<number> {
   if (!h.o.apply) { console.log("dry-run: matrix drives live slot-2 + Flite staging; pass --apply"); return 0; }
