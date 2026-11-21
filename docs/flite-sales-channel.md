@@ -81,5 +81,37 @@ Notes:
 - The token comes only from `--token-file`; `--token` is rejected. The script never reads `process.env`.
 - Required variables: `channelId`, `env` (`sandbox|production`), `org`; `currency` defaults to `USD`.
 - Bind the Flite connection to the sandbox account for `env=sandbox`. The env guard makes a mismatch fail before any request.
-- The REST paths used by install/publish/status (`/projects/<p>/workflows[/<key>/publish]`) are unconfirmed placeholders. Confirm them against the real w6w API before using `--apply`.
+- Install/publish/status use the confirmed w6w root paths (`POST /workflows`, `POST /workflows/:id/publish`, `GET /workflows/:id[/subscriptions|/runs]`); verified live in T3.
 - The app catalog must contain `vip.cohost.w6w` (with `get-channel-event-snapshot`, `register-urn-mappings`, and the two triggers), `vip.cohost.flite` and `vip.cohost.transformers.flite`.
+
+## Install notes (T3 sandbox E2E)
+
+- The three tenant apps (`vip.cohost.w6w`, `vip.cohost.flite`, `vip.cohost.transformers.flite`) were built and installed into `.tenant-apps/cohost` digest-only: the version folders that `index.json` named were reused, and no version or folder was added. `vip.cohost.w6w` was built with `COHOST_API_URL=https://integrations-flite-s2.cohost.foo/api/v1`. `index-diff.py` confirms that only the digest-family fields of those three entries changed.
+- The w6w container (`devcontainer-api-1`) re-registered the folder at 19:14Z (`[tenant-apps] cohost: … vip.cohost.w6w bumped`). The `app.js` sha256 inside the container equals `execSha256` in `index.json`. The manifest carries actions `get-channel-event-snapshot` and `register-urn-mappings` and triggers `channel-event-changed` and `ticket-changed`.
+- Catalog caveat: tenant apps live in the `cohost` tenant tier. A default-tenant/system token sees `GET /apps` as 682 system apps and none of `vip.cohost.*`. Install, publish and run requests must therefore authenticate as the `cohost` tenant.
+- Preflight: `http://localhost:5999/api/v1/health` and `https://integrations-flite-s2.cohost.foo/api/v1/health` both returned 200 `{"status":"healthy"}`.
+- `artifacts/e2e/reinstall.sh` re-applies the slot-2 build and `restore.sh` restores the backup (sha256 checked).
+
+## Sandbox setup findings (T3 S4, 2026-11-21)
+
+Run with `node scripts/sandbox-e2e.ts setup --token-file <cohost-tenant token> --w6w https://api-s2.w6w.dev --cohost-cred-file <json {email,password}> --out <artifacts/e2e> --apply`. It is idempotent: connections and the channel are found by the `fsc-e2e-` display name/name prefix, so a re-run creates nothing new. It writes `setup.json` (ids only, no secrets).
+
+- **Connections.** `POST /apps/<appId>/connections` with `{authKey, displayName, credential}` (`POST /connections` is a 404); `POST /connections/<id>/test` re-checks. The Flite SANDBOX connection uses auth key `partner-login-staging` and the credential `{email, password}` taken from `oss/flite/.env.local`; it only ever travels in that body. The organization the connection landed on is `ORG A`, and that is what the workflow `org` variable carries (the variable is only a mapping label).
+- **Cohost connection.** Auth key `api-token` with the slot-2 auth-emulator bearer as the token. Its `test` reads `/orders?limit=1`, which answers 403 for the emulator user (company routes answer 200), so the test reports "token rejected" while the connection is `connected` and usable. The emulator token also expires after about an hour; re-run setup against a fresh connection if runs begin to answer 401.
+- **Channel.** `POST /company/sales-channels` needs `channel.filters` (`{tags:[], excludeContextId:[], includeContextId:[]}`); without it the API answers 500. Created as `type api`, `isPublic false`.
+- **Trigger params are stored unresolved.** After a plain install, the subscription for `channel-event-changed` stored `channelId` as the literal object `{"$":"vars.channelId"}`, so the T2 trigger's channel filter (`typeof params.channelId === "string"`) is skipped. `setup` therefore installs `artifacts/e2e/workflow.installed.json`, the T1 workflow with that one trigger's `channelId` written as the literal channel id; the stored subscription then shows `channelId: <id>`. `workflow.ts install` could do this substitution itself (follow-up); `ticket-changed` has no channel param, and the snapshot step decides channel membership.
+- **Subscriptions.** After publish there are exactly two, one per trigger node, both `enabled: true`, `status: registered`, `lastError: null` (`registered` is the active state). `POST /workflows` on an existing id answers 201 and replaces the definition; a following publish reconciles the subscriptions (the old `channel-event-changed` one is replaced, not duplicated).
+
+## Sandbox findings (T3 E2E matrix, 2026-11-21)
+
+Flite staging only (`partner-login-staging`, `api-staging.fliteapi.city`); the request log shows 0 `api-main` and 108 `api-staging` lines. Results are in `artifacts/e2e/matrix.json` (R1–R13): PASS for R1, R2, R4–R10, R12, R13; RECORDED for R3 and R11.
+
+- **Trigger delivery is synthetic.** Slot-2 has no webhook dispatcher: the automation outbox drain is a skeleton whose routing is not wired, and no automation service runs on the slot. The harness posts a ping to `/triggers/webhooks/<subscription>` for each Cohost change. Runs, snapshots, sync and Flite writes are real; the real Cohost → W delivery path was not exercised.
+- **R3 (residual, vendor behaviour).** Two concurrent first publishes created two Flite events (remote count 2, both runs succeeded). Flite has no idempotency key on create and the dedupe is not atomic (see "Residual first-publish race"). Recorded, not fixed.
+- **R10 found a T2 defect**, fixed by T4: the owner ticket list omits sold-out and hidden tickets, so the snapshot had no mapping for them and sync created a duplicate Flite ticket. After the fix (owner tickets read with `status=all`, mappings for the union of owner and channel ids) R10 passes: add, hide, sold-out and remove each update the same Flite ticket.
+- **R11 (RECORDED).** Capacity 50 → 40 → 5 maps to Flite capacity 40 and 5 with only `update-ticket` ops. The partial-sale half (sold > 0) cannot be driven on slot-2 (no route creates a sale); `capacity - sold` is covered only by the T1 unit tests.
+- **R12.** No second company can be created on slot-2, so the "foreign" event is an id the connection's company cannot read (API 404). The run fails at the snapshot node, no sync output, and the Flite event count is unchanged.
+- **R13.** A EUR ticket and a donation ticket (`priceCategory donation`) fail the run with one error each; no Flite ticket exists for them and a second ping creates nothing.
+- **Unlist route** is `DELETE /events/:id/channels/:channelId`. Flite stores the description as `<p>…</p>`. An empty description is recorded in R7.
+- **Installed workflow** carries the channel trigger's `channelId` as a literal (trigger params are stored unresolved); see the setup findings above.
+- **Tenant-app catalog.** Rows R1–R9 and R11–R13 ran on the first slot-2 build of `vip.cohost.w6w`; R10 ran on a rebuild from clean `cohost-w6w` HEAD including the T4 fix (a build from the lane's uncommitted overlay was rejected by the server with `manifest_mismatch`). The catalog is restored from backup at the end of the run.

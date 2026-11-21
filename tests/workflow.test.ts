@@ -41,6 +41,8 @@ const mutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["report code does not throw", (wf) => { node(wf, "report").with.code = "return { ok: true };"; }, /must throw when errors/],
   ["report throws unconditionally", (wf) => { node(wf, "report").with.code = "throw new Error('x');"; }, /must throw when errors/],
   ["report reachable around register", (wf) => { wf.edges.push({ from: "sync", to: "report" }); }, /without passing register|must not be reachable directly/],
+  ["id outside server grammar", (wf) => { wf.id = "wf_flite_sales_channel"; }, /id must match/],
+  ["key with underscore", (wf) => { wf.key = "flite_sales_channel"; }, /key must be an account slug/],
   ["embedded connection id", (wf) => { node(wf, "sync").uses.connection = "conn_1"; }, /embeds a connection id/],
 ];
 for (const [name, mutate, re] of mutations) {
@@ -58,15 +60,16 @@ test("--token is rejected and install dry-run sends nothing", () => {
   assert.match(String(bad.stderr), /--token is rejected/);
   const dry = spawnSync("node", ["scripts/workflow.ts", "install", FILE, "--w6w", "http://127.0.0.1:1", "--project", "p", "--token-file", "/dev/null"]);
   assert.equal(dry.status, 0);
-  assert.match(String(dry.stdout), /^POST http:\/\/127\.0\.0\.1:1\/projects\/p\/workflows/);
+  assert.match(String(dry.stdout), /^POST http:\/\/127\.0\.0\.1:1\/workflows\?project=p\n$/);
   assert.match(String(dry.stderr), /dry run/);
 });
 
 const run = (...a: string[]) => spawnSync("node", ["scripts/workflow.ts", ...a]);
 
-test("missing --w6w / --project / --token-file is refused", () => {
-  const full = ["--w6w", "http://127.0.0.1:9", "--project", "p", "--token-file", "/dev/null"];
-  for (const drop of ["--w6w", "--project", "--token-file"]) {
+test("missing --w6w / --token-file is refused; --project is optional", () => {
+  const full = ["--w6w", "http://127.0.0.1:9", "--token-file", "/dev/null"];
+  assert.equal(run("install", FILE, ...full).status, 0, "install without --project is a valid dry run");
+  for (const drop of ["--w6w", "--token-file"]) {
     const i = full.indexOf(drop);
     const args = full.filter((_, j) => j !== i && j !== i + 1);
     for (const cmd of ["install", "publish", "status"]) {
@@ -107,20 +110,33 @@ test("dry run makes no request; --apply sends once with bearer from file; output
     assert.equal(await main([cmd, FILE, ...base, "--var", "env=sandbox"], io), 0);
     assert.equal(o.calls.length, 0, "no request without --apply");
     assert.equal(o.out.length, 1);
-    assert.match(o.out[0], /^POST http:\/\/h\/projects\/p\/workflows/);
+    assert.equal(o.out[0], cmd === "install" ? "POST http://h/workflows?project=p" : "POST http://h/workflows/wf_flite-sales-channel/publish");
   }
+  const inst = mkIo();
+  assert.equal(await main(["install", FILE, ...base, "--var", "env=sandbox", "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"], inst.io), 0);
+  const sent = JSON.parse(inst.o.calls[0].init.body);
+  assert.equal(sent.id, "wf_flite-sales-channel");
+  assert.equal(sent.connections.cohost.connection, "conn_c");
+  assert.equal(sent.connections.flite.connection, "conn_f");
+  assert.equal(sent.variables.find((v: any) => v.key === "env").default, "sandbox");
   const { o, io } = mkIo();
   assert.equal(await main(["publish", FILE, ...base, "--apply"], io), 0);
   assert.equal(o.calls.length, 1);
   assert.equal(o.calls[0].init.method, "POST");
-  assert.match(o.calls[0].url, /^http:\/\/h\/projects\/p\/workflows\/.+\/publish$/);
+  assert.match(o.calls[0].url, /^http:\/\/h\/workflows\/wf_flite-sales-channel\/publish$/);
   assert.equal(o.calls[0].init.headers.authorization, "Bearer s3cr3t-token");
   assert.equal(o.out.length, 1, "stdout is exactly one method+path line");
   assert.match(o.out[0], /^POST \S+$/);
   assert.ok(![...o.out, ...o.err].join("\n").includes("s3cr3t-token"));
   const st = mkIo();
   assert.equal(await main(["status", ...base], st.io), 0);
-  assert.deepEqual(st.o.out, ["GET http://h/projects/p/workflows/flite-sales-channel"]);
+  assert.deepEqual(st.o.out, [
+    "GET http://h/workflows/wf_flite-sales-channel",
+    "GET http://h/workflows/wf_flite-sales-channel/subscriptions",
+    "GET http://h/workflows/wf_flite-sales-channel/runs",
+  ]);
+  assert.equal(st.o.calls.length, 3);
+  assert.ok(st.o.calls.every((c) => c.init.method === "GET"));
 });
 
 test("no process.env in the script and no credentials in the JSON", () => {
