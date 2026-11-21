@@ -128,7 +128,7 @@ test("labels, ids and action wrapper", () => {
 
 test("ticket errors carry ticketId; sold-out owner status closes; maximumQuantity never read", () => {
   const trap = { id: "t3", name: "C", status: "live", priceCategory: "free", costs: { cost: "USD,0" } };
-  Object.defineProperty(trap, "maximumQuantity", { get() { throw new Error("maximumQuantity read"); }, enumerable: false });
+  Object.defineProperty(trap, "maximumQuantity", { get() { throw new Error("maximumQuantity read"); }, enumerable: true });
   const d = buildDesiredState(snap({ channelTickets: [
     { id: "t1", name: "A", status: "live", priceCategory: "paid", costs: { cost: "EUR,100" } },
     { id: "t2", name: "B", status: "live", priceCategory: "paid", costs: { cost: "USD,900" } },
@@ -138,4 +138,13 @@ test("ticket errors carry ticketId; sold-out owner status closes; maximumQuantit
   assert.match(d.errors[0].message, /^ticket t1:/);
   assert.equal(d.errors[0].ticketId, "t1");
   assert.deepEqual(d.tickets.map((t) => [t.ticketId, t.availability, t.fields.ticketPrice]), [["t2", "false", 9], ["t3", "true", 0]]);
+});
+
+test("non-USD ticket is excluded even when event currency option is EUR", () => {
+  const d = buildDesiredState(snap({ channelTickets: [
+    { id: "t1", name: "A", status: "live", priceCategory: "paid", costs: { cost: "EUR,100" } },
+    { id: "t2", name: "B", status: "live", priceCategory: "paid", costs: { cost: "USD,100" } },
+  ] }), { ...opts, currency: "EUR" } as typeof opts);
+  assert.deepEqual(d.tickets.map((t) => t.ticketId), ["t2"]);
+  assert.equal(d.errors[0].ticketId, "t1");
 });

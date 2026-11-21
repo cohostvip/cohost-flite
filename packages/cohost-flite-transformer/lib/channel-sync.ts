@@ -161,20 +161,22 @@ export function buildDesiredState(snapshot: ChannelSnapshot, options: BuildOptio
     } catch (error) {
       errors.push({ message: `event: ${error instanceof Error ? error.message : String(error)}` });
     }
-    const currency = (options.currency || "USD").toUpperCase();
     for (const ct of snapshot.channelTickets ?? []) {
       const id = str(ct.id);
       try {
-        if (ct.priceCategory !== "free" && ct.priceCategory !== "donation") {
-          const got = parseAmount(rec(ct.costs).cost, "costs.cost").currency;
-          if (got !== currency) throw new Error(`currency ${got} is not ${currency}`);
+        const cost = rec(ct.costs).cost;
+        if (cost !== undefined && cost !== null && cost !== "") {
+          const got = parseAmount(cost, "costs.cost").currency;
+          if (got !== "USD") throw new Error(`currency ${got} is not USD`);
         }
+        // explicit picks: never spread the channel ticket (maximumQuantity must not be read)
+        const { name, description, priceCategory, costs } = ct as Record<string, unknown>;
         const props = cohostTicketToFlite({
-          ...ct,
           id,
-          refId: undefined,
-          urn: undefined,
-          meta: undefined,
+          name,
+          description,
+          priceCategory,
+          costs,
           capacity: 0,
           quantitySold: 0,
           status: "live",
