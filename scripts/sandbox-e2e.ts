@@ -164,7 +164,7 @@ export async function setup(h: Harness): Promise<number> {
   if (cohost?.id) {
     const t = await h.w6wReq("POST", `/connections/${cohost.id}/test`, {});
     const after = list(await h.w6wReq("GET", "/connections"), "connections").find((c) => c.id === cohost.id) ?? cohost;
-    state.cohost = { connectionId: cohost.id, authKey: after.authKey ?? cohost.authKey, state: after.state, testOk: t?.ok ?? after.lastTestOk ?? null };
+    state.cohost = { connectionId: cohost.id, authKey: after.authKey ?? cohost.authKey, state: after.state, testOk: t?.ok ?? after.lastTestOk ?? null, ...(t?.ok === false ? { testMessage: String(t.message ?? "").slice(0, 120), testNote: "api-token test reads /orders?limit=1; the emulator user gets 403 there while company routes answer 200" } : {}) };
     if (after.state !== "connected") { save(); throw new Error(`Cohost connection state ${after.state}`); }
   }
 
@@ -172,7 +172,7 @@ export async function setup(h: Harness): Promise<number> {
   const chans = list(await h.cohostReq("GET", "/company/sales-channels"), "channels");
   let channel = chans.find((c) => String(c.name ?? "").startsWith(PREFIX));
   if (!channel) {
-    const r = await h.cohostReq("POST", "/company/sales-channels", { channel: { name: `${PREFIX}${ts}`, type: "api", isPublic: false } });
+    const r = await h.cohostReq("POST", "/company/sales-channels", { channel: { name: `${PREFIX}${ts}`, type: "api", isPublic: false, tags: [], filters: { tags: [], excludeContextId: [], includeContextId: [] } } });
     if (r?.dryRun) log("dry-run: would create slot-2 channel"); else channel = r.channel ?? r.data ?? r;
   } else log(`reuse channel ${channel.id}`);
   const channelId = idOf(channel);
@@ -181,24 +181,30 @@ export async function setup(h: Harness): Promise<number> {
   if (!flite?.id || !cohost?.id || !channelId) { log("dry-run complete (nothing mutated); setup.json written"); return 0; }
 
   // (d) install + publish via T1's workflow.ts (argv carries only ids and paths)
+  // The engine stores trigger `with` unresolved (`{"$":"vars.channelId"}` reached the T2 trigger as an object and its
+  // channel filter was skipped), so the install file binds the channel trigger's channelId as a literal.
+  const wfJson = JSON.parse(readFileSync(join(SCRIPT_DIR, "..", WF_FILE), "utf8"));
+  const chTrigger = wfJson.nodes.find((n: any) => n.uses?.trigger === true && n.uses.action === "channel-event-changed");
+  if (!chTrigger?.with || chTrigger.with.channelId === undefined) throw new Error("channel-event-changed trigger has no channelId param to bind");
+  chTrigger.with.channelId = channelId;
+  const installFile = join(h.out, "workflow.installed.json");
+  writeFileSync(installFile, JSON.stringify(wfJson, null, 2) + "\n");
   const wfArgs = ["--w6w", h.w6w, "--token-file", h.o.flags["token-file"], "--var", "env=sandbox", "--var", `channelId=${channelId}`, "--var", `org=${fliteOrg}`, "--connection", `cohost=${cohost.id}`, "--connection", `flite=${flite.id}`, "--apply"];
-  const wf = (cmd: string) => execFileSync(process.execPath, [join(SCRIPT_DIR, "workflow.ts"), cmd, join(SCRIPT_DIR, "..", WF_FILE), ...wfArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  let wfExists = false;
-  try { await h.w6wReq("GET", `/workflows/${WF_ID}`); wfExists = true; } catch (e) { if ((e as any).status !== 404) throw e; }
-  if (!wfExists) log(wf("install").trim()); else log(`workflow ${WF_ID} already installed`);
+  const wf = (cmd: string) => execFileSync(process.execPath, [join(SCRIPT_DIR, "workflow.ts"), cmd, installFile, ...wfArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  log(wf("install").trim()); // POST /workflows on an existing id answers 201 (replaces the definition)
   log(wf("publish").trim());
   state.workflow = { id: WF_ID, installed: true, vars: { env: "sandbox", channelId, org: fliteOrg } };
 
   // (e) exactly 2 active subscriptions, bounded retry (<= 90 s)
   let subs: any[] = [];
   const deadline = Date.now() + 90_000;
-  const active = (x: any) => x.active === true || ["active", "enabled", "subscribed", "healthy", "live"].includes(String(x.status ?? x.state ?? "").toLowerCase());
+  const active = (x: any) => x.enabled === true && ["registered", "active"].includes(String(x.status).toLowerCase()) && !x.lastError;
   for (;;) {
     subs = list(await h.w6wReq("GET", `/workflows/${WF_ID}/subscriptions`), "subscriptions");
     if (subs.length >= 2 && subs.filter(active).length === 2 || Date.now() > deadline) break;
     await new Promise((r) => setTimeout(r, 3000));
   }
-  state.subscriptions = subs.map((x) => ({ id: x.id ?? x.subscriptionId, trigger: x.nodeId ?? x.trigger ?? x.triggerKey ?? x.action, status: x.status ?? x.state ?? x.active }));
+  state.subscriptions = subs.map((x) => ({ id: x.id ?? x.subscriptionId, trigger: x.nodeId, status: x.status, enabled: x.enabled, triggerKey: x.triggerKey, params: x.params }));
   state.subscriptionsActive = subs.filter(active).length;
   state.finishedAt = new Date().toISOString();
   save();
