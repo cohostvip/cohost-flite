@@ -19,3 +19,10 @@ test("good pair passes", () => {
   assert.equal(assertSandbox("https://api-staging.fliteapi.city/v1/events").hostname, "api-staging.fliteapi.city");
   assert.equal(sandboxAuthKey("partner-login-staging"), "partner-login-staging");
 });
+
+import { workflowChildArgs } from "../scripts/sandbox-e2e.ts";
+const base = { w6w: "http://w", tokenFile: "/t", channelId: "c", org: "o", cohostConn: "a", fliteConn: "b" };
+test("setup child args: --apply only when the harness applies", () => {
+  assert.ok(!workflowChildArgs({ ...base, apply: false }).includes("--apply"));
+  assert.ok(workflowChildArgs({ ...base, apply: true }).includes("--apply"));
+});

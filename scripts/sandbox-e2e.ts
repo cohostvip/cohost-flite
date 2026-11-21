@@ -123,6 +123,13 @@ export function parseEnvFile(file: string, keys: string[]): Record<string, strin
 const idOf = (r: any): string | undefined => r?.id ?? r?.data?.id ?? r?.connection?.id ?? r?.channel?.id ?? r?.data?.channel?.id ?? r?.data?.connection?.id;
 const list = (r: any, key: string): any[] => (Array.isArray(r) ? r : r?.[key] ?? r?.data?.[key] ?? r?.results ?? r?.data ?? []);
 
+/** Child args for T1's workflow.ts install/publish. --apply is forwarded ONLY when the harness itself runs with --apply. */
+export function workflowChildArgs(a: { w6w: string; tokenFile: string; channelId: string; org: string; cohostConn: string; fliteConn: string; apply: boolean }): string[] {
+  const args = ["--w6w", a.w6w, "--token-file", a.tokenFile, "--var", "env=sandbox", "--var", `channelId=${a.channelId}`, "--var", `org=${a.org}`, "--connection", `cohost=${a.cohostConn}`, "--connection", `flite=${a.fliteConn}`];
+  if (a.apply) args.push("--apply");
+  return args;
+}
+
 /** setup: connections, slot-2 channel, workflow install + publish, subscription check. Idempotent by `fsc-e2e-*` names. */
 export async function setup(h: Harness): Promise<number> {
   const log = (m: string) => console.log(m);
@@ -188,7 +195,7 @@ export async function setup(h: Harness): Promise<number> {
   chTrigger.with.channelId = channelId;
   const installFile = join(h.out, "workflow.installed.json");
   writeFileSync(installFile, JSON.stringify(wfJson, null, 2) + "\n");
-  const wfArgs = ["--w6w", h.w6w, "--token-file", h.o.flags["token-file"], "--var", "env=sandbox", "--var", `channelId=${channelId}`, "--var", `org=${fliteOrg}`, "--connection", `cohost=${cohost.id}`, "--connection", `flite=${flite.id}`, "--apply"];
+  const wfArgs = workflowChildArgs({ w6w: h.w6w, tokenFile: h.o.flags["token-file"], channelId, org: fliteOrg, cohostConn: cohost.id, fliteConn: flite.id, apply: h.o.apply });
   const wf = (cmd: string) => execFileSync(process.execPath, [join(SCRIPT_DIR, "workflow.ts"), cmd, installFile, ...wfArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   log(wf("install").trim()); // POST /workflows on an existing id answers 201 (replaces the definition)
   log(wf("publish").trim());
@@ -366,6 +373,7 @@ const R1: RowFn = async (m) => {
       if (fliteId) {
         readback = compact(await m.fliteEvent(fliteId));
         if (readback.eventName !== sc.name) problems.push(`eventName=${readback.eventName}`);
+        const r1Count = await m.fliteCount(sc.name); if (r1Count !== 1) problems.push(`remote count ${r1Count}`);
         if (readback.tickets.length !== sc.tickets.length) problems.push(`flite tickets=${readback.tickets.length}`);
         const prices = readback.tickets.map((t: any) => Number(t.ticketPrice)).sort((a: number, b: number) => a - b).join(",");
         if (prices !== "10,25") problems.push(`prices=${prices}`);
