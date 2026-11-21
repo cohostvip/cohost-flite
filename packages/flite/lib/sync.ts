@@ -32,7 +32,7 @@ export interface DesiredState {
   event: Record<string, string> | null;
   tickets: DesiredTicket[];
   mappings: { event: MappingRecord[]; tickets: Record<string, MappingRecord[]> };
-  errors: string[];
+  errors: Array<{ message: string; ticketId?: string }>;
 }
 
 export interface Registration {

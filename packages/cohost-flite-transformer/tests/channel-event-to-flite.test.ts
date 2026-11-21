@@ -116,7 +116,8 @@ test("event-level failures: event null plus error", () => {
   assert.equal(d.errors.length, 1);
   d = buildDesiredState(snap({ event: { ...o, tz: "" } }), opts);
   assert.equal(d.event, null);
-  assert.match(d.errors[0], /time zone/);
+  assert.match(d.errors[0].message, /time zone/);
+  assert.equal(d.errors[0].ticketId, undefined);
 });
 
 test("labels, ids and action wrapper", () => {
@@ -134,6 +135,7 @@ test("ticket errors carry ticketId; sold-out owner status closes; maximumQuantit
     trap,
   ], tickets: [{ id: "t2", capacity: 50, quantitySold: 5, status: "sold-out" }] }), opts);
   assert.equal(d.errors.length, 1);
-  assert.match(d.errors[0], /^ticket t1:/);
+  assert.match(d.errors[0].message, /^ticket t1:/);
+  assert.equal(d.errors[0].ticketId, "t1");
   assert.deepEqual(d.tickets.map((t) => [t.ticketId, t.availability, t.fields.ticketPrice]), [["t2", "false", 9], ["t3", "true", 0]]);
 });

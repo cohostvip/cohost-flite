@@ -61,7 +61,7 @@ export interface DesiredState {
   event: Record<string, string> | null;
   tickets: DesiredTicket[];
   mappings: ChannelSnapshot["mappings"];
-  errors: string[];
+  errors: Array<{ message: string; ticketId?: string }>;
 }
 
 export interface BuildOptions {
@@ -140,7 +140,7 @@ function remaining(owner: Rec | undefined): number | undefined {
 
 export function buildDesiredState(snapshot: ChannelSnapshot, options: BuildOptions): DesiredState {
   const mode = decideMode(snapshot);
-  const errors: string[] = [];
+  const errors: Array<{ message: string; ticketId?: string }> = [];
   const eventUrn = snapshot.eventUrn;
   const labels: DesiredLabels = {
     provider: "flite",
@@ -159,7 +159,7 @@ export function buildDesiredState(snapshot: ChannelSnapshot, options: BuildOptio
     try {
       event = buildEvent(snapshot);
     } catch (error) {
-      errors.push(`event: ${error instanceof Error ? error.message : String(error)}`);
+      errors.push({ message: `event: ${error instanceof Error ? error.message : String(error)}` });
     }
     const currency = (options.currency || "USD").toUpperCase();
     for (const ct of snapshot.channelTickets ?? []) {
@@ -191,7 +191,7 @@ export function buildDesiredState(snapshot: ChannelSnapshot, options: BuildOptio
           ...(left !== undefined ? { capacity: left } : {}),
         });
       } catch (error) {
-        errors.push(`ticket ${id}: ${error instanceof Error ? error.message : String(error)}`);
+        errors.push({ message: `ticket ${id}: ${error instanceof Error ? error.message : String(error)}`, ticketId: String(id) });
       }
     }
   } else if (mode === "hold") {
