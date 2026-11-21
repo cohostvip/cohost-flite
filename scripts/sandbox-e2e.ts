@@ -37,7 +37,7 @@ export class Harness {
     this.o = o;
     this.out = o.flags.out ?? "artifacts/e2e";
   }
-  get w6w() { return this.o.flags.w6w ?? "http://localhost:3000/api"; }
+  get w6w() { return this.o.flags.w6w ?? "https://api-s2.w6w.dev"; }
   get cohostApi() { return this.o.flags["cohost-api"] ?? "http://localhost:5999/api/v1"; }
   private token(): string {
     const f = this.o.flags["token-file"];
@@ -62,8 +62,7 @@ export class Harness {
   /** slot-2 Cohost API with an emulator bearer (obtained by signInWithPassword; password read from --cohost-cred-file). */
   async cohostBearer(): Promise<string> {
     const emu = this.o.flags["auth-emulator"] ?? "http://localhost:9039";
-    const cred = this.o.flags["cohost-cred-file"];
-    if (!cred) throw new Error("--cohost-cred-file <json {email,password}> required");
+    const cred = this.o.flags["cohost-cred-file"] ?? "/tmp/fsc-t3-cohost-cred.json";
     const { email, password } = JSON.parse(readFileSync(cred, "utf8"));
     const r = await fetch(`${emu}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=local`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password, returnSecureToken: true }) });
     const b: any = await r.json();
@@ -214,6 +213,170 @@ export async function setup(h: Harness): Promise<number> {
   return 0;
 }
 
+// ---------------------------------------------------------------------------------------------
+// matrix: scenario helpers (slot-2 Cohost API, w6w runs, Flite staging readback) + the rows
+// ---------------------------------------------------------------------------------------------
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const rid = () => Math.random().toString(36).slice(2, 10);
+const FLITE_STAGING = "https://api-staging.fliteapi.city/api";
+
+export interface Scenario { tag: string; eventId: string; name: string; tickets: Array<{ id: string; name: string; cost: number; capacity: number }>; channelId: string }
+
+export class Matrix {
+  readonly h: Harness;
+  readonly setup: any;
+  private fliteToken?: string;
+  readonly tag: string;
+  constructor(h: Harness) {
+    this.h = h;
+    this.setup = JSON.parse(readFileSync(join(h.out, "setup.json"), "utf8"));
+    this.tag = `fsc-e2e-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  }
+  get channelId(): string { return this.setup.channel.channelId; }
+  subId(trigger: "channel_changed" | "ticket_changed"): string {
+    const s = (this.setup.subscriptions as any[]).find((x) => x.trigger === trigger);
+    if (!s?.id) throw new Error(`setup.json has no ${trigger} subscription`);
+    return s.id;
+  }
+
+  /** Create a live company event + tickets, then list it on the slot-2 channel (PUT /events/:id/channels/:channelId). */
+  async createScenario(label: string, tickets: Array<{ name: string; cost: number; capacity: number }>, opts: { list?: boolean } = {}): Promise<Scenario> {
+    const name = `${this.tag}-${label}`;
+    const day = 20 + Math.floor(Math.random() * 9);
+    const ev = await this.h.cohostReq("POST", "/events", { event: {
+      name, start: `2027-01-${day}T19:00:00.000Z`, end: `2027-01-${day}T22:00:00.000Z`, tz: "America/New_York", status: "live", currency: "USD", public: false,
+      url: `${this.tag.toLowerCase()}-${label}-${rid()}`.slice(0, 60),
+      location: { name: "Probe Hall", address: { city: "New York", region: "NY", country: "US", address_1: "1 Main St", postal_code: "10001" }, placeId: "fsc-e2e-place", venueId: "fsc-e2e-venue", geometry: null },
+      description: { text: `${this.tag} ${label}` },
+    } });
+    const eventId = ev?.data?.id as string;
+    if (!eventId) throw new Error(`event create returned no id (${JSON.stringify(ev).slice(0, 120)})`);
+    const made: Scenario["tickets"] = [];
+    for (const t of tickets) {
+      const r = await this.h.cohostReq("POST", `/events/${eventId}/tickets`, { ticket: { name: t.name, type: "admission", category: "general", priceCategory: "paid", capacity: t.capacity, maximumQuantity: 10, costs: { cost: `USD,${t.cost}` }, status: "live" } });
+      const id = Object.keys(r?.data?.ids ?? {})[0] ?? r?.data?.tickets?.[0]?.id;
+      if (!id) throw new Error("ticket create returned no id");
+      made.push({ id, name: t.name, cost: t.cost, capacity: t.capacity });
+    }
+    if (opts.list !== false) await this.h.cohostReq("PUT", `/events/${eventId}/channels/${this.channelId}`, {});
+    return { tag: this.tag, eventId, name, tickets: made, channelId: this.channelId };
+  }
+
+  /** Cohost's webhook dispatcher does not run in slot-2: deliver the ping it would send, to the workflow's trigger URL. */
+  async ping(trigger: "channel_changed" | "ticket_changed", action: string, resourcePath: string, data?: Record<string, unknown>): Promise<string> {
+    const id = `trg_fsc${rid()}`;
+    const body = { id, action, timestamp: new Date().toISOString(), urn: `urn:1:acme-corp:cohost-falcon:${resourcePath}`, context: { companyId: "acme-corp", service: "cohost-falcon", resourcePath }, ...(data ? { data } : {}) };
+    if (!this.h.o.apply) return id;
+    const res = await fetch(`${this.h.w6w}/triggers/webhooks/${this.subId(trigger)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!res.ok) throw new Error(`webhook delivery -> ${res.status}`);
+    return id;
+  }
+  pingListing(eventId: string, action: "channelEvent.listed" | "channelEvent.changed" | "channelEvent.unlisted" = "channelEvent.listed") {
+    return this.ping("channel_changed", action, `/channels/${this.channelId}/events/${eventId}/listings/primary`);
+  }
+
+  async runIds(): Promise<string[]> {
+    const r = await this.h.w6wReq("GET", `/workflows/${WF_ID}/runs?limit=100`);
+    return (list(r, "runs") as any[]).map((x) => x.runId);
+  }
+  /** Wait (bounded) until `count` NEW runs exist (not in `before`) and all are finished; returns their details. */
+  async waitRuns(before: string[], count = 1, timeoutMs = 120_000): Promise<any[]> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const now = (await this.runIds()).filter((x) => !before.includes(x));
+      if (now.length >= count) {
+        const runs = await Promise.all(now.map(async (id) => (await this.h.w6wReq("GET", `/runs/${id}`)).run));
+        if (runs.every((r) => !["queued", "running", "pending"].includes(String(r.status)))) return runs;
+      }
+      if (Date.now() > deadline) throw new Error(`timeout waiting for ${count} new run(s); saw ${now.length}`);
+      await sleep(2500);
+    }
+  }
+  syncOut(run: any): any { return run?.nodes?.sync?.output ?? null; }
+
+  // --- Flite staging readback (credentials only in the login body; every call is assertSandbox-ed + logged) ---
+  private async fliteAuth(): Promise<Record<string, string>> {
+    if (!this.fliteToken) {
+      const envFile = this.h.o.flags["flite-env-file"] ?? "/home/segevs/orca/workspaces/cohost/integrations-flite/oss/flite/.env.local";
+      const c = parseEnvFile(envFile, ["FLITE_SANDBOX_UNAME", "FLITE_SANDBOX_PWD"]);
+      const r = await this.h.flitePost(`${FLITE_STAGING}/partner-login`, { email: c.FLITE_SANDBOX_UNAME, password: c.FLITE_SANDBOX_PWD });
+      this.fliteToken = r?.data?.token;
+      if (!this.fliteToken) throw new Error("Flite staging login returned no token");
+    }
+    return { authorization: `Bearer ${this.fliteToken}` };
+  }
+  async fliteEvent(fliteEventId: string): Promise<any> {
+    const r = await this.h.fliteGet(`${FLITE_STAGING}/get-event-tickets-info?eventId=${encodeURIComponent(fliteEventId)}`, await this.fliteAuth());
+    return r?.data;
+  }
+  /** The Cohost system resource a Flite URN maps to (RMS), or null. */
+  async mappingFor(mappedUrn: string): Promise<any | null> {
+    try {
+      const r = await this.h.cohostReq("POST", "/rms/urn/resolve", { urn: mappedUrn });
+      return (r?.resources ?? r?.data?.resources ?? []).find((x: any) => x["-resource.@type"] === "system-resource") ?? null;
+    } catch { return null; }
+  }
+}
+
+const compact = (e: any) => e && ({ _id: e._id, eventName: e.eventName, isEventEnd: e.isEventEnd, tickets: (e.tickets ?? []).map((t: any) => ({ _id: t._id, ticketName: t.ticketName, ticketPrice: t.ticketPrice, capacity: t.capacity, sold: t.sold, availability: t.availability })) });
+
+type RowFn = (m: Matrix) => Promise<{ expected: string; step: () => Promise<{ observed: string; pass: boolean; runIds?: string[]; fliteReadback?: unknown; recorded?: boolean }> }>;
+
+/** R1 first publish: 1 Flite event; its tickets = the channel tickets; RMS mapping present. */
+const R1: RowFn = async (m) => {
+  const sc = await m.createScenario("r1", [{ name: "GA", cost: 1000, capacity: 50 }, { name: "VIP", cost: 2500, capacity: 20 }]);
+  return {
+    expected: `${sc.name}: first publish creates exactly 1 Flite staging event named ${sc.name}; it has ${sc.tickets.length} tickets (GA 10.00, VIP 25.00) = the channel tickets; sync output env=sandbox, no errors; the event URN is RMS-mapped`,
+    step: async () => {
+      const before = await m.runIds();
+      await m.pingListing(sc.eventId);
+      const runs = await m.waitRuns(before, 1);
+      const out = m.syncOut(runs[0]);
+      const problems: string[] = [];
+      if (runs[0].status !== "succeeded") problems.push(`run status ${runs[0].status}`);
+      if (out?.env !== "sandbox") problems.push(`env=${out?.env}`);
+      if (out?.errors?.length) problems.push(`errors=${JSON.stringify(out.errors)}`);
+      const reg = (out?.registrations ?? []) as any[];
+      const evReg = reg.find((r) => r.labels?.kind === "event");
+      const fliteId: string = out?.eventId ?? "";
+      let readback: any = null; let mapping: any = null;
+      if (fliteId) {
+        readback = compact(await m.fliteEvent(fliteId));
+        if (readback.eventName !== sc.name) problems.push(`eventName=${readback.eventName}`);
+        if (readback.tickets.length !== sc.tickets.length) problems.push(`flite tickets=${readback.tickets.length}`);
+        const prices = readback.tickets.map((t: any) => Number(t.ticketPrice)).sort((a: number, b: number) => a - b).join(",");
+        if (prices !== "10,25") problems.push(`prices=${prices}`);
+        if (reg.filter((r) => r.labels?.kind === "ticket").length !== sc.tickets.length) problems.push("ticket registrations missing");
+        mapping = evReg ? await m.mappingFor(evReg.mappedUrn) : null;
+        if (!mapping) problems.push("RMS mapping not found for the event mappedUrn");
+      } else problems.push("sync output has no eventId");
+      return { observed: problems.length ? problems.join("; ") : `1 Flite event ${fliteId}, ${readback.tickets.length} tickets, env=sandbox, mapping ${mapping?.["-resource.id"] ?? "present"}`, pass: problems.length === 0, runIds: runs.map((r) => r.runId), fliteReadback: { eventId: fliteId, ...readback, scenario: { cohostEventId: sc.eventId, tickets: sc.tickets } } };
+    },
+  };
+};
+
+const ROW_FNS: Record<string, RowFn> = { R1 };
+
+export async function matrix(h: Harness): Promise<number> {
+  if (!h.o.apply) { console.log("dry-run: matrix drives live slot-2 + Flite staging; pass --apply"); return 0; }
+  const m = new Matrix(h);
+  let failed = 0;
+  for (const row of h.o.rows) {
+    const fn = ROW_FNS[row];
+    if (!fn) { console.log(`${row}: not implemented yet (skipped)`); continue; }
+    try {
+      const prepared = await fn(m); // creates the row's own tagged slot-2 records, then `expected` is persisted before the step runs
+      await h.record(row, prepared.expected, prepared.step);
+    } catch (e) {
+      await h.record(row, "(row setup failed before any expectation)", async () => { throw e; });
+    }
+    const res = (JSON.parse(readFileSync(join(h.out, "matrix.json"), "utf8")) as any[]).find((x) => x.row === row);
+    console.log(`${row}: ${res?.status} — ${String(res?.observed).slice(0, 200)}`);
+    if (res?.status !== "PASS" && res?.status !== "RECORDED") failed++;
+  }
+  return failed ? 2 : 0;
+}
+
 export async function main(argv: string[]): Promise<number> {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) { console.log(USAGE); return 0; }
   let o: Opts;
@@ -222,9 +385,7 @@ export async function main(argv: string[]): Promise<number> {
   const h = new Harness(o);
   console.log(`${o.cmd}: ${o.apply ? "APPLY" : "dry-run"} w6w=${h.w6w} cohost=${h.cohostApi} rows=${o.rows.join(",")}`);
   if (o.cmd === "setup") return await setup(h);
-  // TODO(T3 later slices): matrix = per-row steps via h.record(row, expected, step).
-  console.log("stub: matrix not implemented yet");
-  return 0;
+  return await matrix(h);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = await main(process.argv.slice(2));
