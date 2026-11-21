@@ -255,3 +255,82 @@ test("publish with an unmapped ticket on a mapped event creates exactly one tick
   assert.deepEqual(paths(requests), ["/get-event-tickets-info", "/create-new-ticket"]);
   assert.equal(out.registrations.some((r) => r.labels.id === "ft7"), true);
 });
+
+// ---- S6 audit: mutation-pinning execute-level tests ----
+test("env guard, both directions + labels.env mismatch + non-staging ctx: zero requests", async () => {
+  // staging ctx, expectedEnv production
+  const a = context([], true);
+  await assert.rejects(syncEvent.execute({ desired: mapped(), expectedEnv: "production" }, a.ctx), /expects production/);
+  assert.equal(a.requests.length, 0);
+  // non-staging ctx, expectedEnv sandbox
+  const b = context([], false);
+  await assert.rejects(syncEvent.execute({ desired: mapped(), expectedEnv: "sandbox" }, b.ctx));
+  assert.equal(b.requests.length, 0);
+  // labels.env disagrees with the connection
+  const c = context([], true);
+  await assert.rejects(syncEvent.execute({ desired: mapped({ labels: { ...labels, env: "production" } }), expectedEnv: "sandbox" }, c.ctx));
+  assert.equal(c.requests.length, 0);
+  // non-staging ctx, production desired + expected: passes the guard (noop ⇒ still zero requests)
+  const d = context([], false);
+  const out = await syncEvent.execute({ desired: desired({ mode: "noop", labels: { ...labels, env: "production" } }), expectedEnv: "production" }, d.ctx);
+  assert.equal(out.env, "production");
+  assert.equal(d.requests.length, 0);
+});
+
+test("two event mappings [fl_b, fl_a] ⇒ fl_a used, zero creates, warning", async () => {
+  const { ctx, requests } = context([{ success: true, data: { _id: "fl_a", ...evFields, showEvent: true, isEventEnd: false, tickets: [] } }], true);
+  const d = mapped({ tickets: [], mappings: { event: [rec("fl_b", { listingId: "L2" }), rec("fl_a", { listingId: "L2" })], tickets: {} } });
+  const out = await syncEvent.execute({ desired: d, expectedEnv: "sandbox" }, ctx);
+  assert.equal(out.eventId, "fl_a");
+  assert.ok(requests[0].url.includes("fl_a"));
+  assert.equal(paths(requests).some((p) => p.includes("create")), false);
+  assert.ok(out.warnings.length >= 1);
+  assert.ok(requests.every((r) => r.url.startsWith(STAGING_API_URL)));
+});
+
+test("capacity values on the wire: 70 stays 70; clamp 8; absent capacity sends no capacity key", async () => {
+  const a = context([remoteEvent({}, [remoteTicket("ft1", { capacity: 100, sold: 20 })]), { success: true, data: {} }], true);
+  await syncEvent.execute({ desired: mapped({ tickets: [tkt("t1", { capacity: 70 })] }), expectedEnv: "sandbox" }, a.ctx);
+  assert.equal(body(a.requests[1]).capacity, 70);
+  assert.equal(body(a.requests[1]).availability, undefined);
+
+  const b = context([remoteEvent({}, [remoteTicket("ft1", { capacity: 50, sold: 8 })]), { success: true, data: {} }], true);
+  await syncEvent.execute({ desired: mapped({ tickets: [tkt("t1", { capacity: 5 })] }), expectedEnv: "sandbox" }, b.ctx);
+  assert.equal(body(b.requests[1]).capacity, 8);
+  assert.equal(body(b.requests[1]).availability, "false");
+
+  const c = context([remoteEvent({}, [remoteTicket("ft1", { capacity: 50, sold: 8, availability: "false" })]), { success: true, data: {} }], true);
+  await syncEvent.execute({ desired: mapped({ tickets: [tkt("t1", { capacity: undefined })] }), expectedEnv: "sandbox" }, c.ctx);
+  assert.equal(c.requests.length, 2);
+  assert.equal("capacity" in body(c.requests[1]), false);
+});
+
+test("hold bodies carry no price/name; reopen precedes first update in publish", async () => {
+  const h = context([remoteEvent({}, [remoteTicket("ft1", { ticketName: "x", ticketPrice: 99 })]), { success: true, data: {} }], true);
+  await syncEvent.execute({ desired: mapped({ mode: "hold", tickets: [tkt("t1", { capacity: 30, fields: {} })] }), expectedEnv: "sandbox" }, h.ctx);
+  const hb = body(h.requests[1]);
+  assert.equal("ticketPrice" in hb, false);
+  assert.equal("ticketName" in hb, false);
+
+  const p = context([remoteEvent({ isEventEnd: true, eventName: "Old" }), { success: true }, { success: true }], true);
+  await syncEvent.execute({ desired: mapped(), expectedEnv: "sandbox" }, p.ctx);
+  assert.equal(paths(p.requests)[1], "/update-event-end-toggle");
+  assert.equal(paths(p.requests)[2], "/update-event-properties");
+});
+
+test("ticket create 500 after event create resolves with 1 error and the event registration", async () => {
+  const { ctx } = context([{ success: true, data: { _id: "fe9" } }, Response.json({}, { status: 500 })], true);
+  const out = await syncEvent.execute({ desired: desired({ event: evFields, tickets: [tkt("t1")] }), expectedEnv: "sandbox" }, ctx);
+  assert.equal(out.errors.length, 1);
+  assert.deepEqual(out.registrations.map((r) => r.mappedUrn), ["urn:1:co_1:flite-sandbox:/events/fe9"]);
+  const l = out.registrations[0].labels;
+  for (const k of ["provider", "env", "org", "channelId", "listingId", "id", "eventId"]) assert.ok((l as Record<string, unknown>)[k], k);
+});
+
+test("stop with no remote tickets/already-false never writes tickets; no delete path anywhere", async () => {
+  const { ctx, requests } = context([remoteEvent({}, []), { success: true }], true);
+  const out = await syncEvent.execute({ desired: mapped({ mode: "stop" }), expectedEnv: "sandbox" }, ctx);
+  assert.deepEqual(paths(requests), ["/get-event-tickets-info", "/update-event-end-toggle"]);
+  assert.equal(out.registrations.length, 0);
+  assert.ok(requests.every((r) => !r.url.includes("/delete-")));
+});
