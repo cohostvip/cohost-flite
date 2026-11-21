@@ -1,0 +1,27 @@
+{
+  "attendees": [
+    {
+      "orderId": "65f1e0000000000000000001",
+      "eventId": "65f1e0000000000000000002",
+      "buyer": {
+        "firstName": "Alex",
+        "lastName": "Rivera",
+        "email": "alex.rivera@example.com",
+        "mobileNumber": "+12025550101",
+        "gender": "female",
+        "profileImage": "",
+        "userId": "65f1e0000000000000000003"
+      },
+      "ticket": {
+        "ticketId": "65f1e0000000000000000004",
+        "ticketName": "Ticket Tier 1",
+        "totalAmount": 0,
+        "promoterAmount": 0,
+        "discountAmount": 0,
+        "ticketQr": "https://example.com/assets/ticketQr/1.png",
+        "barcode": "PSZJE1441099175800147641415",
+        "ebTicketId": "ac2cb272-bfb9-29e5-fa35-42478a081306"
+      }
+    }
+  ]
+}

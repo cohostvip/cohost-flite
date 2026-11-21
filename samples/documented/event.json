@@ -1,0 +1,33 @@
+{
+  "success": true,
+  "message": "Event retrieved successfully",
+  "data": {
+    "_id": "65a8b3cdef12345678901234",
+    "userId": "65a8b3cdef12345678901230",
+    "organizationId": "65a8b3cdef12345678901231",
+    "eventCode": "FLECABCD1234",
+    "eventName": "Summer Music Festival 2024 - updated",
+    "slug": "summer-music-festival-2024",
+    "venueName": "Central Park",
+    "venueLocation": "10250 Santa Monica Blvd, Los Angeles, CA 90067, USA",
+    "description": "<p>An amazing summer music festival featuring top artists</p>",
+    "startTime": "18:00",
+    "endTime": "23:00",
+    "visits": 0,
+    "startDate": "2024-07-15",
+    "endDate": "2024-07-16",
+    "status": "Approved",
+    "hostFlyer": [
+      "https://example.com/flyer.jpg"
+    ],
+    "isEventEnd": false,
+    "city": "Los Angeles",
+    "zipCode": "90067",
+    "state": "California",
+    "showEvent": false,
+    "timeZoneId": "America/Los_Angeles",
+    "rsvpCapacity": 0,
+    "created": "2026-08-08T01:24:11.128Z",
+    "ebEventId": "EB1234567890"
+  }
+}

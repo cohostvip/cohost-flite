@@ -1,0 +1,25 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "No changes detected",
+    "data": {
+      "eventId": "65f1e0000000000000000014",
+      "eventName": "Sample Event 10",
+      "description": "Sample description 11",
+      "venueName": "Sample Venue 9",
+      "venueLocation": "110 Example Avenue",
+      "city": "Sample City 5",
+      "state": "New York",
+      "zipCode": "41643",
+      "showEvent": false,
+      "rsvpCapacity": 12,
+      "startDate": "2028-01-18",
+      "endDate": "2028-01-18",
+      "startTime": "19:00",
+      "endTime": "23:30",
+      "timeZoneId": "America/New_York",
+      "ebEventId": ""
+    }
+  }
+}

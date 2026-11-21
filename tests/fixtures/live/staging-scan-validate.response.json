@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Ticket is valid.",
+    "data": {
+      "ticketNumber": "ZIJPT1357048470674995411919",
+      "validityStatus": "valid",
+      "isValid": true,
+      "rejectionReason": null,
+      "errorCode": null,
+      "ticketType": "Ticket Tier 1",
+      "checkedIn": false,
+      "checkInTime": null
+    }
+  }
+}

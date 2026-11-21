@@ -1,0 +1,149 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Events for organization retrieved successfully.",
+    "data": [
+      {
+        "_id": "65f1e0000000000000000006",
+        "userId": "65f1e0000000000000000008",
+        "organizationId": "65f1e0000000000000000009",
+        "eventCode": "SHSLV3KSM0733",
+        "eventName": "Sample Event 1",
+        "slug": "sample-event-1",
+        "venueName": "Sample Venue 1",
+        "venueLocation": "101 Example Avenue",
+        "description": "<p>Sample description 3.</p>",
+        "startTime": "21:00",
+        "endTime": "23:30",
+        "visits": 24,
+        "startDate": "2027-04-16",
+        "endDate": "2027-04-16",
+        "status": "Approved",
+        "hostFlyer": [
+          "https://example.com/assets/hostFlyer/1.webp"
+        ],
+        "isEventEnd": false,
+        "city": "Sample City 1",
+        "zipCode": "98582",
+        "state": "New York",
+        "timeZoneId": "America/New_York",
+        "created": "2027-02-28T05:48:26.516Z",
+        "ebEventId": "80d38f93-8585-44c0-cc6e-55198b78878b"
+      },
+      {
+        "_id": "65f1e000000000000000000a",
+        "userId": "65f1e0000000000000000008",
+        "organizationId": "65f1e0000000000000000009",
+        "eventCode": "PJALAQ2HT6747",
+        "eventName": "Sample Event 1",
+        "slug": "sample-event-2",
+        "venueName": "Sample Venue 1",
+        "venueLocation": "102 Example Avenue",
+        "description": "<p>Sample description 3.</p>",
+        "startTime": "17:00",
+        "endTime": "23:30",
+        "visits": 75,
+        "startDate": "2027-04-16",
+        "endDate": "2027-04-16",
+        "status": "Approved",
+        "hostFlyer": [
+          "https://example.com/assets/hostFlyer/2.webp"
+        ],
+        "isEventEnd": false,
+        "city": "Sample City 1",
+        "zipCode": "98582",
+        "state": "New York",
+        "timeZoneId": "America/New_York",
+        "created": "2027-02-28T08:29:28.619Z",
+        "ebEventId": "paBIsMqqR1LKMsl9wgJx"
+      },
+      {
+        "_id": "65f1e000000000000000000b",
+        "userId": "65f1e0000000000000000008",
+        "organizationId": "65f1e0000000000000000009",
+        "eventCode": "GGIHH4JD8459",
+        "eventName": "Sample Event 2",
+        "slug": "sample-event-3",
+        "venueName": "Sample Venue 2",
+        "venueLocation": "103 Example Avenue",
+        "description": "<p>Sample description 4.</p>",
+        "startTime": "22:00",
+        "endTime": "02:00",
+        "visits": 47,
+        "startDate": "2027-04-09",
+        "endDate": "2027-04-10",
+        "status": "Approved",
+        "hostFlyer": [
+          "https://example.com/assets/hostFlyer/3.webp"
+        ],
+        "isEventEnd": false,
+        "city": "Sample City 2",
+        "zipCode": "96093",
+        "state": "Pennsylvania",
+        "timeZoneId": "America/New_York",
+        "created": "2027-02-28T06:22:24.805Z",
+        "ebEventId": "ZPUPuKaPXqPYfoYG7xHV"
+      },
+      {
+        "_id": "65f1e000000000000000000c",
+        "userId": "65f1e0000000000000000008",
+        "organizationId": "65f1e0000000000000000009",
+        "eventCode": "MHTAML808040",
+        "eventName": "Sample Event 3",
+        "slug": "sample-event-4",
+        "venueName": "Sample Venue 2",
+        "venueLocation": "103 Example Avenue",
+        "description": "<p>Sample description 4.</p>",
+        "startTime": "22:00",
+        "endTime": "02:00",
+        "visits": 61,
+        "startDate": "2027-03-20",
+        "endDate": "2027-03-21",
+        "status": "Approved",
+        "hostFlyer": [
+          "https://example.com/assets/hostFlyer/4.webp"
+        ],
+        "isEventEnd": false,
+        "city": "Sample City 2",
+        "zipCode": "96093",
+        "state": "Pennsylvania",
+        "timeZoneId": "America/New_York",
+        "created": "2027-02-28T06:14:27.527Z",
+        "ebEventId": "UIfmIhnNgq2DS5AxmEbf"
+      },
+      {
+        "_id": "65f1e000000000000000000d",
+        "userId": "65f1e0000000000000000008",
+        "organizationId": "65f1e0000000000000000009",
+        "eventCode": "HQEJ8ICS8685",
+        "eventName": "Sample Event 4",
+        "slug": "sample-event-5",
+        "venueName": "Sample Venue 3",
+        "venueLocation": "104 Example Avenue",
+        "description": "<p>Sample description 5.</p>",
+        "startTime": "19:00",
+        "endTime": "21:00",
+        "visits": 40,
+        "startDate": "2027-03-18",
+        "endDate": "2027-03-18",
+        "status": "Approved",
+        "hostFlyer": [
+          "https://example.com/assets/hostFlyer/5.webp"
+        ],
+        "isEventEnd": false,
+        "city": "Sample City 1",
+        "zipCode": "78329",
+        "state": "New York",
+        "timeZoneId": "America/New_York",
+        "created": "2027-02-28T05:45:06.858Z",
+        "ebEventId": "1LQUMQApBBQIsOfGl70C"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 5,
+      "hasMore": true
+    }
+  }
+}

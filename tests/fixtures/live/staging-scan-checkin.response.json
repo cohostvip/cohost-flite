@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Checked-In Successfully",
+    "data": {
+      "ticketNumber": "ZIJPT1357048470674995411919",
+      "validityStatus": "valid",
+      "isValid": true,
+      "rejectionReason": null,
+      "errorCode": null,
+      "ticketType": "Ticket Tier 1",
+      "checkedIn": true,
+      "checkInTime": "2027-11-19T00:15:43.099Z"
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "success": true,
+  "message": "Event Details!",
+  "data": {
+    "_id": "65a8b3cdef12345678901234",
+    "userId": "65a8b3cdef12345678901230",
+    "organizationId": "65a8b3cdef12345678901231",
+    "eventCode": "FLECABCD1234",
+    "eventName": "Summer Music Festival 2024",
+    "slug": "summer-music-festival-2024",
+    "venueName": "Central Park",
+    "venueLocation": "New York, NY, USA",
+    "description": "<p>An amazing summer music festival featuring top artists</p>",
+    "startTime": "18:00",
+    "endTime": "23:00",
+    "visits": 0,
+    "startDate": "2024-07-15",
+    "endDate": "2024-07-16",
+    "status": "Approved",
+    "hostFlyer": [
+      "https://example.com/flyer.jpg"
+    ],
+    "city": "New York",
+    "zipCode": "10001",
+    "state": "New York",
+    "showEvent": true,
+    "timeZoneId": "America/New_York",
+    "rsvpCapacity": 500,
+    "created": "2024-07-01T12:00:00.000Z",
+    "isEventEnd": false,
+    "ebEventId": "EB1234567890",
+    "tickets": [
+      {
+        "_id": "65a8b3cdef12345678901235",
+        "ticketName": "VIP Ticket",
+        "ticketPrice": 150,
+        "capacity": 500,
+        "sold": 0,
+        "availability": "true",
+        "description": "VIP ticket with premium access",
+        "maxCart": 10,
+        "ticketId": "65a8b3cdef12345678901235",
+        "eventId": "65a8b3cdef12345678901234",
+        "ebTicketId": "EB1234567890"
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    // No "erasableSyntaxOnly": tsc would apply it to @w6w/types@0.2.0's TypeScript source, which
+    // has a constructor parameter property (src/registry-package.ts). Node's type stripping still
+    // rejects non-erasable syntax in this repo's sources whenever the tests or the build load them.
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["packages/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "dist", "vendor"]
+}

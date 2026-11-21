@@ -1,0 +1,17 @@
+{
+  "status": 404,
+  "body": {
+    "success": false,
+    "message": "Invalid ticket number.",
+    "data": {
+      "ticketNumber": "BBCTVOGAVBFWAE",
+      "validityStatus": "invalid",
+      "isValid": false,
+      "rejectionReason": "Invalid ticket number.",
+      "errorCode": "TICKET_NOT_FOUND",
+      "ticketType": null,
+      "checkedIn": false,
+      "checkInTime": null
+    }
+  }
+}

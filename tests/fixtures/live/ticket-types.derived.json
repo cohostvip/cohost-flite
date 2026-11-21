@@ -1,0 +1,30 @@
+{
+  "tickets": [
+    {
+      "_id": "65f1e0000000000000000005",
+      "ticketName": "Ticket Tier 2",
+      "ticketPrice": 10,
+      "capacity": 1,
+      "sold": 0,
+      "availability": "true",
+      "description": "Sample description 1",
+      "maxCart": 10,
+      "ticketId": "65f1e0000000000000000005",
+      "eventId": "65f1e0000000000000000006",
+      "ebTicketId": "96e53a52-2902-00e4-ec4a-22091c17557c"
+    },
+    {
+      "_id": "65f1e0000000000000000007",
+      "ticketName": "Ticket Tier 3",
+      "ticketPrice": 750,
+      "capacity": 1,
+      "sold": 0,
+      "availability": "true",
+      "description": "Sample description 2",
+      "maxCart": 10,
+      "ticketId": "65f1e0000000000000000007",
+      "eventId": "65f1e0000000000000000006",
+      "ebTicketId": "8f41e351-27b3-60f4-4ae5-47210f31984d"
+    }
+  ]
+}

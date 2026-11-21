@@ -1,0 +1,20 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Ticket retrieved successfully",
+    "data": {
+      "_id": "65f1e0000000000000000015",
+      "ticketName": "Ticket Tier 5",
+      "ticketPrice": 10,
+      "capacity": 5,
+      "sold": 0,
+      "availability": "hide",
+      "description": "Sample description 13",
+      "maxCart": 10,
+      "ticketId": "65f1e0000000000000000015",
+      "eventId": "65f1e0000000000000000014",
+      "ebTicketId": ""
+    }
+  }
+}

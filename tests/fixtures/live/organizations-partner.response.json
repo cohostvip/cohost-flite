@@ -1,0 +1,17 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Organizations fetched successfully",
+    "data": [
+      {
+        "_id": "65f1e0000000000000000009",
+        "ownerId": "65f1e0000000000000000013",
+        "name": "Sample Organization 1",
+        "email": "organizer1@example.com",
+        "currency": "usd",
+        "tabling": false
+      }
+    ]
+  }
+}

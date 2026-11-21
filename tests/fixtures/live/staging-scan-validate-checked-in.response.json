@@ -1,0 +1,17 @@
+{
+  "status": 409,
+  "body": {
+    "success": false,
+    "message": "Already checked-in.",
+    "data": {
+      "ticketNumber": "ZIJPT1357048470674995411919",
+      "validityStatus": "invalid",
+      "isValid": false,
+      "rejectionReason": "Already checked-in.",
+      "errorCode": "ALREADY_CHECKED_IN",
+      "ticketType": "Ticket Tier 1",
+      "checkedIn": true,
+      "checkInTime": "2027-11-19T00:15:43.099Z"
+    }
+  }
+}

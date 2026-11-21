@@ -1,0 +1,20 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Ticket retrieved successfully",
+    "data": {
+      "_id": "65f1e0000000000000000005",
+      "ticketName": "Ticket Tier 2",
+      "ticketPrice": 10,
+      "capacity": 1,
+      "sold": 0,
+      "availability": "true",
+      "description": "Sample description 1",
+      "maxCart": 10,
+      "ticketId": "65f1e0000000000000000005",
+      "eventId": "65f1e0000000000000000006",
+      "ebTicketId": "96e53a52-2902-00e4-ec4a-22091c17557c"
+    }
+  }
+}

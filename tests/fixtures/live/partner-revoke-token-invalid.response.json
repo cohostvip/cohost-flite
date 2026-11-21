@@ -1,0 +1,8 @@
+{
+  "status": 401,
+  "body": {
+    "success": false,
+    "message": "Invalid refresh token",
+    "code": "invalid_refresh_token"
+  }
+}

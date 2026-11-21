@@ -1,0 +1,51 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Event Details!",
+    "data": {
+      "_id": "65f1e0000000000000000014",
+      "userId": "65f1e0000000000000000012",
+      "organizationId": "65f1e0000000000000000009",
+      "eventCode": "FIKMMWWE2703",
+      "eventName": "Sample Event 10",
+      "slug": "sample-event-11",
+      "venueName": "Sample Venue 9",
+      "venueLocation": "110 Example Avenue",
+      "description": "Sample description 11",
+      "startTime": "19:00",
+      "endTime": "23:30",
+      "visits": 0,
+      "startDate": "2028-01-18",
+      "endDate": "2028-01-18",
+      "status": "Approved",
+      "hostFlyer": [
+        "https://example.com/assets/hostFlyer/11.png"
+      ],
+      "isEventEnd": false,
+      "city": "Sample City 5",
+      "zipCode": "41643",
+      "state": "New York",
+      "showEvent": false,
+      "timeZoneId": "America/New_York",
+      "rsvpCapacity": 12,
+      "created": "2027-11-19T00:15:39.495Z",
+      "ebEventId": "",
+      "tickets": [
+        {
+          "_id": "65f1e0000000000000000015",
+          "ticketName": "Ticket Tier 4",
+          "ticketPrice": 10,
+          "capacity": 5,
+          "sold": 0,
+          "availability": "hide",
+          "description": "Sample description 12",
+          "maxCart": 4,
+          "ticketId": "65f1e0000000000000000015",
+          "eventId": "65f1e0000000000000000014",
+          "ebTicketId": ""
+        }
+      ]
+    }
+  }
+}

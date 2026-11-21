@@ -1,0 +1,12 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Event has been successfully marked as ended.",
+    "data": {
+      "eventId": "65f1e0000000000000000014",
+      "eventName": "Sample Event 10",
+      "isEventEnd": true
+    }
+  }
+}

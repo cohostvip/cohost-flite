@@ -1,0 +1,8 @@
+{
+  "status": 401,
+  "body": {
+    "success": false,
+    "message": "Refresh token has already been used",
+    "code": "refresh_token_reused"
+  }
+}

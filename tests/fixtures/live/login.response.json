@@ -1,0 +1,24 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Login successful",
+    "data": {
+      "token": "fixture-token",
+      "refreshToken": "fixture-refreshToken",
+      "expiresIn": 604800,
+      "refreshTokenExpiresIn": 2592000,
+      "refreshTokenExpiresAt": "2027-12-12T19:44:27.695Z",
+      "user": {
+        "id": "65f1e0000000000000000012",
+        "firstName": "Jordan",
+        "lastName": "Rivera",
+        "email": "jordan.rivera@example.com",
+        "organization": {
+          "_id": "65f1e0000000000000000009",
+          "name": "Sample Organization 1"
+        }
+      }
+    }
+  }
+}

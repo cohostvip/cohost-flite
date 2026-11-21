@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "message": "Ticket is valid.",
+  "data": {
+    "ticketNumber": "ABC123XYZ",
+    "ticketType": "GA+",
+    "validityStatus": "valid",
+    "isValid": true,
+    "rejectionReason": null,
+    "errorCode": null,
+    "checkedIn": false,
+    "checkInTime": null
+  }
+}

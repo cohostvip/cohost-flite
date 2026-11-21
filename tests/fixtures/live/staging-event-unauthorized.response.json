@@ -1,0 +1,7 @@
+{
+  "status": 400,
+  "body": {
+    "success": false,
+    "message": "You are not authorized to perform this action for this event"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Ticket deleted successfully",
+    "data": {
+      "_id": "65f1e0000000000000000015",
+      "ticketId": "65f1e0000000000000000015",
+      "eventId": "65f1e0000000000000000014",
+      "ticketName": "Ticket Tier 4",
+      "isDeleted": true,
+      "deleted": "2027-11-19T00:15:41.134Z",
+      "ebTicketId": ""
+    }
+  }
+}

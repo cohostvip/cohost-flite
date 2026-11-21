@@ -1,0 +1,64 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Event Details!",
+    "data": {
+      "_id": "65f1e0000000000000000006",
+      "userId": "65f1e0000000000000000008",
+      "organizationId": "65f1e0000000000000000009",
+      "eventCode": "SHSLV3KSM0733",
+      "eventName": "Sample Event 1",
+      "slug": "sample-event-1",
+      "venueName": "Sample Venue 1",
+      "venueLocation": "101 Example Avenue",
+      "description": "<p>Sample description 3.</p>",
+      "startTime": "21:00",
+      "endTime": "23:30",
+      "visits": 24,
+      "startDate": "2027-04-16",
+      "endDate": "2027-04-16",
+      "status": "Approved",
+      "hostFlyer": [
+        "https://example.com/assets/hostFlyer/1.webp"
+      ],
+      "isEventEnd": false,
+      "city": "Sample City 1",
+      "zipCode": "98582",
+      "state": "New York",
+      "showEvent": true,
+      "timeZoneId": "America/New_York",
+      "rsvpCapacity": 0,
+      "created": "2027-02-28T05:48:26.516Z",
+      "ebEventId": "80d38f93-8585-44c0-cc6e-55198b78878b",
+      "tickets": [
+        {
+          "_id": "65f1e0000000000000000005",
+          "ticketName": "Ticket Tier 2",
+          "ticketPrice": 10,
+          "capacity": 1,
+          "sold": 0,
+          "availability": "true",
+          "description": "Sample description 1",
+          "maxCart": 10,
+          "ticketId": "65f1e0000000000000000005",
+          "eventId": "65f1e0000000000000000006",
+          "ebTicketId": "96e53a52-2902-00e4-ec4a-22091c17557c"
+        },
+        {
+          "_id": "65f1e0000000000000000007",
+          "ticketName": "Ticket Tier 3",
+          "ticketPrice": 750,
+          "capacity": 1,
+          "sold": 0,
+          "availability": "true",
+          "description": "Sample description 2",
+          "maxCart": 10,
+          "ticketId": "65f1e0000000000000000007",
+          "eventId": "65f1e0000000000000000006",
+          "ebTicketId": "8f41e351-27b3-60f4-4ae5-47210f31984d"
+        }
+      ]
+    }
+  }
+}

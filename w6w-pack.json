@@ -1,0 +1,16 @@
+{
+  "manifestVersion": "1",
+  "kind": "pack",
+  "name": "cohost-flite",
+  "displayName": "Cohost / Flite",
+  "description": "Flite integration and offline Cohost/Flite transformations.",
+  "version": "2.0.0",
+  "apps": [
+    {
+      "path": "./packages/cohost-flite-transformer"
+    },
+    {
+      "path": "./packages/flite"
+    }
+  ]
+}

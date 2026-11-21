@@ -1,0 +1,35 @@
+{
+  "name": "cohost-flite-w6w-pack",
+  "version": "2.0.0",
+  "description": "W6W app pack: Flite API integration and Cohost/Flite transformations.",
+  "license": "ISC",
+  "author": {
+    "name": "Cohost",
+    "url": "https://cohost.vip"
+  },
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test packages/*/tests/*.test.ts",
+    "test:live": "node --test --test-concurrency=1 tests/live/*.live.test.ts",
+    "check": "tsc -p tsconfig.json",
+    "types": "node scripts/derive-types.mjs",
+    "build": "node scripts/build.mjs",
+    "test:bundle": "npm run build && node --test tests/bundle.test.ts",
+    "vendor:w6w": "node scripts/vendor-w6w.mjs",
+    "deploy:local": "npm run check && npm run test:bundle && node scripts/deploy-local.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@w6w/types": "0.2.0",
+    "@w6w/validator": "file:vendor/w6w/validator",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.3"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  }
+}

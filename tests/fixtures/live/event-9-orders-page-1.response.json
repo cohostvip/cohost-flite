@@ -1,0 +1,56 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "data": {
+      "orders": [
+        {
+          "_id": "65f1e0000000000000000001",
+          "transactionId": "TCRVM6ZRJ",
+          "orderNumber": "#UXXGKLHZSO22",
+          "totalAmount": 0,
+          "discountAmount": 0,
+          "promoterName": "",
+          "status": "Complete",
+          "uniqueLinkId": "aywnz",
+          "rsvpType": "",
+          "isTransferred": false,
+          "eventQuestionAnswers": {},
+          "totalCustomFee": 0,
+          "partialRefundAmount": 0,
+          "isPartialRefund": false,
+          "instaHandles": [],
+          "onGround": false,
+          "created": "2027-03-02T23:32:22.171Z",
+          "user": {
+            "firstName": "Alex",
+            "lastName": "Rivera",
+            "email": "alex.rivera@example.com",
+            "mobileNumber": "+12025550101",
+            "gender": "female",
+            "profileImage": "",
+            "userId": "65f1e0000000000000000003"
+          },
+          "tickets": [
+            {
+              "ticketId": "65f1e0000000000000000004",
+              "ticketName": "Ticket Tier 1",
+              "totalAmount": 0,
+              "promoterAmount": 0,
+              "discountAmount": 0,
+              "ticketQr": "https://example.com/assets/ticketQr/1.png",
+              "barcode": "PSZJE1441099175800147641415",
+              "ebTicketId": "ac2cb272-bfb9-29e5-fa35-42478a081306"
+            }
+          ],
+          "currency": "usd"
+        }
+      ],
+      "pagination": {
+        "hasMore": false,
+        "currentPage": 1,
+        "nextPage": null
+      }
+    }
+  }
+}

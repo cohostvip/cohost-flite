@@ -1,0 +1,13 @@
+{
+  "name": "@cohost/flite-types",
+  "version": "2.0.0",
+  "description": "Flite Partner API types, derived from real response JSON.",
+  "license": "ISC",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts"
+  }
+}

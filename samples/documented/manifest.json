@@ -1,0 +1,52 @@
+{
+  "kind": "documentation-examples",
+  "liveApiResponses": false,
+  "source": "https://www.flite.city/docs",
+  "examples": [
+    {
+      "file": "organizations.json",
+      "sourceAnchor": "get-all-orgs-partner-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "events-page.json",
+      "sourceAnchor": "get-events-all-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "event.json",
+      "sourceAnchor": "get-event-by-id-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "event-with-tickets.json",
+      "sourceAnchor": "get-event-tickets-info-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "ticket.json",
+      "sourceAnchor": "get-ticket-by-id-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "orders-page.json",
+      "sourceAnchor": "get-orders-by-event-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "order.json",
+      "sourceAnchor": "get-order-by-id-get",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "ticket-validation.json",
+      "sourceAnchor": "scanner-ticket-validate-post",
+      "kind": "documented-success-response"
+    },
+    {
+      "file": "attendees.derived.json",
+      "kind": "derived-from-documented-order",
+      "sourceFile": "order.json"
+    }
+  ]
+}

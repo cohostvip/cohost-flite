@@ -1,0 +1,31 @@
+{
+  "status": 201,
+  "body": {
+    "success": true,
+    "message": "Event created successfully",
+    "data": {
+      "_id": "65f1e0000000000000000014",
+      "eventId": "65f1e0000000000000000014",
+      "eventName": "Sample Event 11",
+      "description": "Sample description 11",
+      "venueName": "Sample Venue 9",
+      "venueLocation": "110 Example Avenue",
+      "city": "Sample City 5",
+      "state": "New York",
+      "zipCode": "41643",
+      "status": "Approved",
+      "showEvent": false,
+      "rsvpCapacity": 10,
+      "startDate": "2028-01-18",
+      "endDate": "2028-01-18",
+      "startTime": "19:00",
+      "endTime": "23:00",
+      "hostFlyer": [
+        "https://example.com/assets/hostFlyer/11.png"
+      ],
+      "slug": "sample-event-11",
+      "eventCode": "FIKMMWWE2703",
+      "ebEventId": ""
+    }
+  }
+}

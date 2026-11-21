@@ -1,0 +1,13 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Event deleted successfully",
+    "data": {
+      "_id": "65f1e0000000000000000014",
+      "eventId": "65f1e0000000000000000014",
+      "eventName": "Sample Event 10",
+      "status": "Deleted"
+    }
+  }
+}

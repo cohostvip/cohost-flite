@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env*
+coverage/
+.DS_Store
+*.tgz
+.local/
+# Flite's API reference and partner spec: local reference only, not published.
+docs/

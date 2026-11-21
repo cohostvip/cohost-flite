@@ -1,0 +1,19 @@
+{
+  "status": 201,
+  "body": {
+    "success": true,
+    "message": "Ticket created successfully",
+    "data": {
+      "_id": "65f1e0000000000000000015",
+      "ticketId": "65f1e0000000000000000015",
+      "eventId": "65f1e0000000000000000014",
+      "ticketName": "Ticket Tier 5",
+      "ticketPrice": 10,
+      "capacity": 5,
+      "availability": "hide",
+      "description": "Sample description 13",
+      "ticketOrder": 1,
+      "ebTicketId": ""
+    }
+  }
+}

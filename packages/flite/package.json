@@ -1,0 +1,35 @@
+{
+  "name": "flite-w6w",
+  "version": "2.1.0",
+  "description": "Flite API actions and order webhook trigger for W6W.",
+  "license": "ISC",
+  "author": {
+    "name": "Cohost",
+    "url": "https://cohost.vip"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.ts"
+  },
+  "w6w": {
+    "id": "vip.cohost.flite",
+    "displayName": "Flite",
+    "categories": [
+      "commerce",
+      "calendar"
+    ],
+    "appearance": {
+      "icon": {
+        "url": "./assets/icon.png",
+        "alt": "Flite"
+      }
+    },
+    "network": {
+      "allow": [
+        "api-main.fliteapi.city",
+        "api-staging.fliteapi.city"
+      ]
+    },
+    "entry": "./index.ts"
+  }
+}

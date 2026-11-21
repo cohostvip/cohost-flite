@@ -1,0 +1,37 @@
+{
+  "success": true,
+  "message": "Events for organization retrieved successfully.",
+  "data": [
+    {
+      "timeZoneId": "America/Los_Angeles",
+      "created": "2025-12-09T07:41:42.053Z",
+      "city": "Los Angeles",
+      "zipCode": "90068",
+      "state": "California",
+      "isEventEnd": false,
+      "status": "Pending",
+      "hostFlyer": [
+        "https://d3skqfvgyt6f3j.cloudfront.net/flyer/flyer-15a802ad-2edc-4d65-af1d-14b11bb0fc4b"
+      ],
+      "startDate": "2025-12-31",
+      "endDate": "2026-01-01",
+      "visits": 30,
+      "startTime": "21:00",
+      "endTime": "02:00",
+      "description": "",
+      "venueName": "1999 N Sycamore Ave",
+      "venueLocation": "1999 North Sycamore Avenue, Los Angeles, CA 90068",
+      "_id": "6937d2b60cc9d1289d040d8e",
+      "userId": "68ee8bb44e2dcfb731d1666c",
+      "organizationId": "6924f8dde03b03955b41fde0",
+      "eventCode": "FLECB5I3I3183",
+      "eventName": "Yamashiro NYE 26 LA",
+      "slug": "yamashiro-nye-26-la"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 10,
+    "hasMore": false
+  }
+}

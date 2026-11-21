@@ -1,0 +1,50 @@
+{
+  "success": true,
+  "data": {
+    "orders": [
+      {
+        "_id": "65a8b3cdef12345678901234",
+        "couponCode": "SUMMER2024",
+        "totalAmount": 150,
+        "discountAmount": 10,
+        "promoterName": "John Promoter",
+        "uniqueLinkId": "abc123xyz",
+        "instaHandles": [
+          "@eventorganizer"
+        ],
+        "created": "2024-07-15T10:00:00.000Z",
+        "isTransferred": false,
+        "totalCustomFee": 5,
+        "status": "Complete",
+        "partialRefundAmount": 0,
+        "orderNumber": "ORD-12345",
+        "isPartialRefund": false,
+        "user": {
+          "id": "65a8b3cdef12345678901234",
+          "firstName": "John",
+          "lastName": "Doe",
+          "gender": "Male",
+          "mobileNumber": "+1234567890",
+          "email": "johndoe@example.com",
+          "profileImage": "https://example.com/profile.jpg"
+        },
+        "tickets": [
+          {
+            "ticketName": "VIP Ticket",
+            "barcode": "FTIKT1764884339875100315011",
+            "ticketQr": "https://example.com/qr-code.png",
+            "totalAmount": 150,
+            "promoterAmount": 10,
+            "discountAmount": 5
+          }
+        ],
+        "refundDate": null
+      }
+    ],
+    "pagination": {
+      "hasMore": true,
+      "currentPage": 1,
+      "nextPage": 2
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@w6w/validator",
+  "version": "0.2.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Vendored from w6w-io/w6w-core@05a20b86bedffc406877817ca79b29173e9aceac by scripts/vendor-w6w.mjs. Do not edit.",
+  "types": "./mod.ts",
+  "exports": {
+    ".": "./mod.ts"
+  }
+}

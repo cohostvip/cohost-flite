@@ -1,0 +1,53 @@
+{
+  "source": "order.json:data.tickets",
+  "note": "Derived ticket/attendee records. Buyer is order-level user data, not a separately identified attendee. No standalone attendee-list endpoint is documented.",
+  "orderId": "698f5871d4af4fdcc4aa56ad",
+  "eventId": "6892130a16bac32eeab4d811",
+  "buyer": {
+    "firstName": "Jane",
+    "lastName": "Smith",
+    "email": "jane.smith@example.com",
+    "mobileNumber": "+15551234567",
+    "profileImage": "https://example.com/profile-images/jane-smith.jpg",
+    "gender": "female",
+    "userId": "66feb953a3c952711a60b03f"
+  },
+  "attendees": [
+    {
+      "ticketId": "698cfc79be0ca083fc89f044",
+      "ticketName": "General Admission",
+      "totalAmount": 25,
+      "ticketQr": "https://example.com/tickets/qr-ga-001.png",
+      "barcode": "FTIKT1771001969710166774017",
+      "checkIn": true,
+      "checkInTime": "2026-02-13T18:10:00.000Z",
+      "fromOrder": null,
+      "isTransferred": false,
+      "transferStatus": null
+    },
+    {
+      "ticketId": "698cfc03be0ca083fc89ef77",
+      "ticketName": "VIP Access",
+      "totalAmount": 25,
+      "ticketQr": "https://example.com/tickets/qr-vip-001.png",
+      "barcode": "FTIKT1771001969625192264540",
+      "checkIn": false,
+      "checkInTime": null,
+      "fromOrder": null,
+      "isTransferred": false,
+      "transferStatus": null
+    },
+    {
+      "ticketId": "698cfbdabe0ca083fc89ef42",
+      "ticketName": "Early Bird",
+      "totalAmount": 25,
+      "ticketQr": "https://example.com/tickets/qr-early-001.png",
+      "barcode": "FTIKT1771001969537756292273",
+      "checkIn": false,
+      "checkInTime": null,
+      "fromOrder": null,
+      "isTransferred": false,
+      "transferStatus": null
+    }
+  ]
+}

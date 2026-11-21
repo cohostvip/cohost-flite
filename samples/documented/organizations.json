@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "message": "Organizations fetched successfully",
+  "data": [
+    {
+      "_id": "65a8b3cdef12345678901234",
+      "name": "Event Organizers Inc",
+      "profileImage": "https://example.com/profile.jpg",
+      "id": "65a8b3cdef12345678901234",
+      "currency": "USD",
+      "ownerId": "65a8b3cdef12345678901235",
+      "email": "contact@example.com",
+      "tabling": false
+    }
+  ]
+}
