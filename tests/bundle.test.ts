@@ -89,7 +89,7 @@ test("flite bundle: actions and network allow-list", async () => {
   assert.deepEqual(apps.flite.app.actions?.map((a: unknown) => (a as ActionDefinition).key), [
     "list-organizations", "list-events", "get-event", "create-event", "update-event", "control-event", "delete-event",
     "get-ticket", "create-ticket", "update-ticket", "delete-ticket", "list-orders", "get-order", "validate-ticket",
-    "check-in-ticket", "get-webhook", "register-webhook",
+    "check-in-ticket", "get-webhook", "register-webhook", "sync-event",
   ]);
   assert.deepEqual(apps.flite.app.auth?.map((auth) => auth.key), ["partner-login", "partner-login-staging", "bearer-token", "bearer-token-staging"]);
   assert.equal(apps.flite.app.triggers?.length, 1);
@@ -102,7 +102,7 @@ test("flite bundle: actions and network allow-list", async () => {
 
 test("transformer bundle: offline conversions in both directions", async () => {
   const transformer = apps["cohost-flite-transformer"];
-  assert.equal(transformer.app.actions?.length, 6);
+  assert.equal(transformer.app.actions?.length, 7);
   assert.equal(transformer.app.auth, undefined);
   assert.deepEqual(transformer.manifest.network.allow, []);
   const flite = readCapture<{ data: { _id: string; eventName: string } }>("event-1-with-tickets").body.data;

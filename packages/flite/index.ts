@@ -18,6 +18,7 @@ import validateTicket from "./actions/validate-ticket.ts";
 import checkInTicket from "./actions/check-in-ticket.ts";
 import getWebhook from "./actions/get-webhook.ts";
 import registerWebhook from "./actions/register-webhook.ts";
+import syncEvent from "./actions/sync-event.ts";
 import orderPlaced from "./triggers/order-placed.ts";
 
 export default {
@@ -39,6 +40,7 @@ export default {
     checkInTicket,
     getWebhook,
     registerWebhook,
+    syncEvent,
   ],
   // Partner sessions renew themselves; pasted bearer tokens remain for existing connections.
   auth: [production, staging, bearerProduction, bearerStaging],
