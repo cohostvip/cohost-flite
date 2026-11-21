@@ -1,0 +1,92 @@
+{
+  "manifestVersion": "2",
+  "id": "wf_flite_sales_channel",
+  "key": "flite-sales-channel",
+  "name": "Flite sales channel",
+  "description": "Publishes, updates and stops Cohost channel events on Flite. Connections are bound at install.",
+  "trigger": { "type": "event", "subscriptionId": "" },
+  "variables": [
+    { "key": "channelId", "type": "string", "required": true },
+    { "key": "env", "type": "string", "required": true },
+    { "key": "org", "type": "string", "required": true },
+    { "key": "currency", "type": "string", "default": "USD" }
+  ],
+  "connections": {
+    "cohost": { "app": "vip.cohost.w6w", "connection": null },
+    "flite": { "app": "vip.cohost.flite", "connection": null }
+  },
+  "nodes": [
+    {
+      "id": "channel_changed",
+      "uses": { "app": "vip.cohost.w6w", "action": "channel-event-changed", "trigger": true, "connectionRef": "cohost" },
+      "with": { "channelId": { "$": "vars.channelId" }, "actions": ["listed", "changed", "unlisted"] }
+    },
+    {
+      "id": "ticket_changed",
+      "uses": { "app": "vip.cohost.w6w", "action": "ticket-changed", "trigger": true, "connectionRef": "cohost" },
+      "with": { "actions": ["created", "updated", "deleted"] }
+    },
+    {
+      "id": "race",
+      "uses": { "app": "@w6w/race", "action": "race" },
+      "ports": { "in": "many" }
+    },
+    {
+      "id": "snapshot",
+      "uses": { "app": "vip.cohost.w6w", "action": "get-channel-event-snapshot", "connectionRef": "cohost" },
+      "with": {
+        "channelId": { "$": "vars.channelId" },
+        "eventId": { "$": "steps.race.output.meta.eventId" },
+        "companyId": { "$": "steps.race.output.meta.companyId" },
+        "listingId": { "$": "steps.race.output.meta.listingId" },
+        "mappingLabels": {
+          "provider": "flite",
+          "env": { "$": "vars.env" },
+          "org": { "$": "vars.org" },
+          "channelId": { "$": "vars.channelId" }
+        }
+      }
+    },
+    {
+      "id": "desired",
+      "uses": { "app": "vip.cohost.transformers.flite", "action": "channel-event-to-flite" },
+      "with": {
+        "snapshot": { "$": "steps.snapshot.output" },
+        "env": { "$": "vars.env" },
+        "org": { "$": "vars.org" },
+        "currency": { "$": "vars.currency" }
+      }
+    },
+    {
+      "id": "sync",
+      "uses": { "app": "vip.cohost.flite", "action": "sync-event", "connectionRef": "flite" },
+      "with": {
+        "desired": { "$": "steps.desired.output.desired" },
+        "expectedEnv": { "$": "vars.env" }
+      }
+    },
+    {
+      "id": "register",
+      "uses": { "app": "vip.cohost.w6w", "action": "register-urn-mappings", "connectionRef": "cohost" },
+      "with": { "mappings": { "$": "steps.sync.output.registrations" } },
+      "retry": { "maxAttempts": 3, "backoff": "exponential", "delayMs": 1000 }
+    },
+    {
+      "id": "report",
+      "uses": { "app": "@w6w/script", "action": "run" },
+      "with": {
+        "code": "if (Array.isArray(input) && input.length > 0) { throw new Error('sync-event reported ' + input.length + ' error(s): ' + JSON.stringify(input)); } return { ok: true };",
+        "input": { "$": "steps.sync.output.errors" }
+      }
+    }
+  ],
+  "edges": [
+    { "from": "channel_changed", "to": "race" },
+    { "from": "ticket_changed", "to": "race" },
+    { "from": "race", "to": "snapshot" },
+    { "from": "snapshot", "to": "desired" },
+    { "from": "desired", "to": "sync" },
+    { "from": "sync", "to": "register" },
+    { "from": "register", "to": "report" }
+  ]
+}

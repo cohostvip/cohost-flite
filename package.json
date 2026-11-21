@@ -11,6 +11,8 @@
   "private": true,
   "scripts": {
     "test": "node --test packages/*/tests/*.test.ts",
+    "test:workflow": "node scripts/workflow.ts validate workflows/flite-sales-channel.workflow.json && node --test tests/workflow.test.ts",
+    "workflow": "node scripts/workflow.ts",
     "test:live": "node --test --test-concurrency=1 tests/live/*.live.test.ts",
     "check": "tsc -p tsconfig.json",
     "types": "node scripts/derive-types.mjs",
