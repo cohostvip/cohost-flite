@@ -4,7 +4,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { bindChannelTriggers, main, validateWorkflow } from "../scripts/workflow.ts";
+import { bindChannelTriggers, coerceVar, IMPORT_ROOT_IDS, main, validateImportRoot, validateWorkflow } from "../scripts/workflow.ts";
+// Side-effect import: no npm script runs tests/import-scripts.test.ts (3-page fixture, idempotency, unmapped/foreign-channel skip), so test:workflow runs it through here.
+import "./import-scripts.test.ts";
 
 const FILE = "workflows/flite-sales-channel.workflow.json";
 const load = () => JSON.parse(readFileSync(FILE, "utf8"));
@@ -364,4 +366,139 @@ test("idempotency: the order write is upsert-order (never a create action), retr
   assert.ok(u.retry.maxAttempts >= 3);
   const writers = wf.nodes.filter((n: any) => ORDER_CHAIN.includes(n.id) && /create|insert|add/i.test(n.uses.action));
   assert.deepEqual(writers, []);
+});
+
+// ---- fourth root: detached "import all orders" flow ----
+
+const IMPORT_IDS: readonly string[] = IMPORT_ROOT_IDS;
+const OTHER_ROOT_IDS = (wf: any) => wf.nodes.map((n: any) => n.id).filter((id: string) => !IMPORT_IDS.includes(id));
+
+test("import root: four roots, the import root is detached from the other three", async () => {
+  const wf = load();
+  assert.deepEqual(await validateWorkflow(wf), []);
+  assert.deepEqual(validateImportRoot(wf, wf.nodes, wf.edges), []);
+  assert.deepEqual(wf.nodes.filter((n: any) => n.uses.trigger === true).map((n: any) => n.id).sort(), ["channel_changed", "channel_ticket_changed", "order_placed"]);
+  assert.deepEqual(node(wf, "import_start").uses, { app: "@w6w/trigger", action: "manual" });
+  assert.equal(wf.edges.filter((e: any) => e.to === "import_start").length, 0);
+  // not one edge crosses the boundary, in either direction
+  const others = new Set(OTHER_ROOT_IDS(wf));
+  assert.equal(wf.edges.filter((e: any) => others.has(e.from) !== others.has(e.to)).length, 0);
+  // no node of the other roots reads an import step, and vice versa
+  for (const n of wf.nodes) {
+    const refs = [...JSON.stringify(n.with ?? {}).matchAll(/"steps\.([A-Za-z0-9_-]+)\./g)].map((m) => m[1]);
+    for (const r of refs) assert.equal(IMPORT_IDS.includes(n.id), IMPORT_IDS.includes(r), `${n.id} reads steps.${r}`);
+  }
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed", "channel_ticket_changed"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "imp_upsert"), [{ from: "imp_transform", to: "imp_upsert" }]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "import_each_order"), [{ from: "import_complete", to: "import_each_order" }]);
+  assert.equal(node(wf, "imp_upsert").uses.action, "upsert-order");
+});
+
+const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
+  ["import root missing", (wf) => {
+    wf.nodes = wf.nodes.filter((n: any) => !IMPORT_IDS.includes(n.id));
+    wf.edges = wf.edges.filter((e: any) => !IMPORT_IDS.includes(e.from) && !IMPORT_IDS.includes(e.to));
+  }, /missing import-root step import_start/],
+  ["import start connected to the race root", (wf) => { wf.edges.push({ from: "import_start", to: "race" }); }, /import root must be detached.*import_start -> race/],
+  ["order root connected into the import root", (wf) => { wf.edges.push({ from: "order_guard", to: "import_list_events" }); }, /import root must be detached.*order_guard -> import_list_events/],
+  ["import root feeding the order guard", (wf) => { wf.edges.push({ from: "import_complete", to: "order_guard" }); }, /import root must be detached.*import_complete -> order_guard/],
+  ["trigger feeding import start", (wf) => { wf.edges.push({ from: "channel_changed", to: "import_start" }); }, /import root must be detached|import_start must have no inbound edge/],
+  ["import step reads another root's output", (wf) => { node(wf, "imp_transform").with.extra = { $: "steps.order_transform.output" }; }, /across the import root boundary/],
+  ["other root reads an import step", (wf) => { node(wf, "report").with.input.extra = { $: "steps.import_flatten.output" }; }, /across the import root boundary/],
+  ["import start made a subscribed trigger", (wf) => { node(wf, "import_start").uses.trigger = true; }, /import-root step import_start must be|two trigger nodes|unknown trigger/],
+  ["upsert reachable around the guard", (wf) => { wf.edges.push({ from: "import_flatten", to: "import_each_order" }); }, /only be reachable through import_complete|without passing import_complete|unexpected import-root edge/],
+  ["upsert fed straight from the loop's start", (wf) => { wf.edges.push({ from: "import_start", to: "imp_upsert" }); }, /imp_upsert must only follow imp_transform|without passing import_complete|unexpected import-root edge/],
+  ["guard edge removed", (wf) => {
+    wf.edges = wf.edges.filter((e: any) => !(e.from === "import_flatten" && e.to === "import_complete") && !(e.from === "import_complete" && e.to === "import_each_order"));
+    wf.edges.push({ from: "import_flatten", to: "import_each_order" });
+  }, /missing edge import_flatten -> import_complete|only be reachable through import_complete/],
+  ["order loop body not contiguous (edge dropped)", (wf) => { wf.edges = wf.edges.filter((e: any) => !(e.from === "imp_transform" && e.to === "imp_upsert")); }, /missing edge imp_transform -> imp_upsert/],
+  ["order loop body reordered", (wf) => { node(wf, "import_each_order").with.body = ["imp_upsert", "imp_transform"]; }, /import_each_order body must be exactly/],
+  ["order loop body missing the upsert", (wf) => { node(wf, "import_each_order").with.body = ["imp_transform"]; }, /import_each_order body must be exactly|imp_upsert must be in the import_each_order/],
+  ["body step edge leaks out of the loop", (wf) => { wf.edges.push({ from: "imp_upsert", to: "import_complete" }); }, /body edge leaks|must have no outgoing edge/],
+  ["body step edge leaks into the loop", (wf) => { wf.edges.push({ from: "import_event_ids", to: "ev_target" }); }, /body edge leaks/],
+  ["foreach wired to a body step", (wf) => { wf.edges.push({ from: "import_each_event", to: "ev_snapshot" }); }, /body edge leaks|unexpected import-root edge/],
+  ["body step shared by two loops", (wf) => { node(wf, "import_each_page").with.body = ["page_fetch", "ev_target"]; }, /import_each_page body must be exactly/],
+  ["page loop iterates the wrong list", (wf) => { node(wf, "import_each_page").with.items = { $: "steps.import_pages.output.skipped" }; }, /import_each_page\.items must be bound/],
+  ["upsert replaced by a create action", (wf) => { node(wf, "imp_upsert").uses.action = "create-order"; }, /import-root step imp_upsert must be vip\.cohost\.w6w\/upsert-order|unknown vip\.cohost\.w6w action/],
+  ["upsert data from the raw Flite order", (wf) => { node(wf, "imp_upsert").with.data.order = { $: "foreach.item.order" }; }, /imp_upsert\.data\.order/],
+  ["upsert retry < 3", (wf) => { node(wf, "imp_upsert").retry.maxAttempts = 1; }, /imp_upsert needs retry/],
+  ["transform env literal", (wf) => { node(wf, "imp_transform").with.env = "sandbox"; }, /imp_transform\.env must be bound/],
+  ["transform eventId dropped", (wf) => { delete node(wf, "imp_transform").with.eventId; }, /imp_transform\.eventId must be bound/],
+  ["list-orders eventId literal", (wf) => { node(wf, "page_fetch").with.eventId = "e1"; }, /page_fetch must read/],
+  ["list-orders unretried", (wf) => { delete node(wf, "page_fetch").retry; }, /page_fetch needs retry/],
+  ["max pages literal", (wf) => { node(wf, "import_pages").with.maxPages = 5; }, /import_pages\.maxPages must be bound/],
+  ["truncation guard does not throw", (wf) => { node(wf, "import_complete").with.code = "return { ok: true };"; }, /import_complete code must throw/],
+  ["truncation guard input unbound", (wf) => { node(wf, "import_complete").with.input.truncated = []; }, /import_complete\.input\.truncated must be bound/],
+  ["snapshot carries a listingId", (wf) => { node(wf, "ev_snapshot").with.listingId = "l1"; }, /ev_snapshot must not carry listingId/],
+  ["snapshot labels lack channelId", (wf) => { delete node(wf, "ev_snapshot").with.mappingLabels.channelId; }, /ev_snapshot\.mappingLabels must be exactly/],
+  ["target expected lacks org", (wf) => { delete node(wf, "ev_target").with.input.expected.org; }, /ev_target\.input\.expected must be exactly/],
+  ["target expected channelId literal", (wf) => { node(wf, "ev_target").with.input.expected.channelId = "ch1"; }, /ev_target\.input\.expected must be exactly/],
+  ["target mappings unbound", (wf) => { node(wf, "ev_target").with.input.mappings = []; }, /ev_target\.input\.mappings must be bound/],
+  ["target does not verify labels", (wf) => { node(wf, "ev_target").with.code = "return { mapped: true };"; }, /ev_target code must verify mapping labels/],
+  ["list events not scoped to the channel", (wf) => { node(wf, "import_list_events").with.channelId = "ch1"; }, /import_list_events\.channelId must be bound/],
+  ["import variable missing", (wf) => { wf.variables = wf.variables.filter((v: any) => v.key !== "importMaxPages"); }, /variable importMaxPages is missing/],
+  ["embedded connection id", (wf) => { node(wf, "imp_upsert").uses.connection = "conn_1"; }, /embeds a connection id/],
+  ["upsert connectionRef missing", (wf) => { delete node(wf, "imp_upsert").uses.connectionRef; }, /imp_upsert must use connectionRef cohost/],
+  ["list-orders connectionRef missing", (wf) => { delete node(wf, "page_fetch").uses.connectionRef; }, /page_fetch must use connectionRef flite/],
+  ["snapshot connectionRef missing", (wf) => { delete node(wf, "ev_snapshot").uses.connectionRef; }, /ev_snapshot must use connectionRef cohost/],
+  ["list-channel-events connectionRef missing", (wf) => { delete node(wf, "import_list_events").uses.connectionRef; }, /import_list_events must use connectionRef cohost/],
+  ["flite connection undeclared", (wf) => { delete wf.connections.flite; }, /connectionRef flite is not declared/],
+  ["stray connectionRef on a script step", (wf) => { node(wf, "import_complete").uses.connectionRef = "cohost"; }, /import_complete must not use a connectionRef/],
+];
+for (const [name, mutate, re] of importMutations) {
+  test(`import root mutation rejected: ${name}`, async () => {
+    const wf = load();
+    mutate(wf);
+    const errs = await validateWorkflow(wf);
+    assert.ok(errs.some((e) => re.test(e)), `expected ${re}, got ${JSON.stringify(errs)}`);
+  });
+}
+
+test("install --var coerces numeric-typed variables: importMaxPages=20 is stored as the number 20, strings stay strings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-"));
+  const tf = join(dir, "tok");
+  writeFileSync(tf, "t\n");
+  const { o, io } = mkIo();
+  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "importMaxPages=20", "--var", "importEventId=evt_1", "--apply"], io), 0);
+  const sent = JSON.parse(o.calls[0].init.body);
+  const v = (k: string) => sent.variables.find((x: any) => x.key === k).default;
+  assert.strictEqual(v("importMaxPages"), 20);
+  assert.strictEqual(v("importEventId"), "evt_1");
+  assert.strictEqual(v("env"), "sandbox");
+  for (const bad of ["abc", "", "1e999"]) {
+    const e = mkIo();
+    assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", `importMaxPages=${bad}`, "--apply"], e.io), 1, bad);
+    assert.match(e.o.err.join("\n"), /importMaxPages must be a number/, bad);
+    assert.equal(e.o.calls.length, 0, "nothing sent for a bad numeric var");
+  }
+  assert.strictEqual(coerceVar({ key: "k", type: "number" }, " 7 "), 7);
+  assert.strictEqual(coerceVar({ key: "k", type: "boolean" }, "true"), true);
+  assert.throws(() => coerceVar({ key: "k", type: "boolean" }, "yes"), /true or false/);
+  assert.strictEqual(coerceVar({ key: "k", type: "string" }, "20"), "20");
+});
+
+test("install --apply binds the import root's cohost and flite connections; channel triggers still bound", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-"));
+  const tf = join(dir, "tok");
+  writeFileSync(tf, "t\n");
+  const { o, io } = mkIo();
+  const args = ["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "channelId=ch_X", "--var", "companyId=co_1",
+    "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"];
+  assert.equal(await main(args, io), 0);
+  const sent = JSON.parse(o.calls[0].init.body);
+  assert.deepEqual(validateImportRoot(sent, sent.nodes, sent.edges), []);
+  for (const [id, ref, conn] of [["import_list_events", "cohost", "conn_c"], ["ev_snapshot", "cohost", "conn_c"], ["imp_upsert", "cohost", "conn_c"], ["page_fetch", "flite", "conn_f"]]) {
+    assert.equal(node(sent, id).uses.connectionRef, ref);
+    assert.equal(sent.connections[ref].connection, conn, `${id} -> ${ref} bound at install`);
+    assert.equal(node(sent, id).uses.connection, undefined, "no connection id embedded in the node");
+  }
+  assert.equal(node(sent, "import_start").with, undefined, "manual start carries no channelId");
+  assert.equal(node(sent, "import_start").uses.trigger, undefined);
+  assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
+  assert.equal(node(sent, "ev_target").with.input.expected.channelId.$, "vars.channelId", "ownership labels stay variable refs");
+  assert.equal(sent.variables.find((v: any) => v.key === "importMaxPages").type, "number");
+  // the source file stays unbound
+  assert.equal(load().connections.flite.connection, null);
+  assert.equal(load().connections.cohost.connection, null);
 });
