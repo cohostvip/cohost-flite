@@ -125,8 +125,9 @@ const idOf = (r: any): string | undefined => r?.id ?? r?.data?.id ?? r?.connecti
 const list = (r: any, key: string): any[] => (Array.isArray(r) ? r : r?.[key] ?? r?.data?.[key] ?? r?.results ?? r?.data ?? []);
 
 /** Child args for T1's workflow.ts install/publish. --apply is forwarded ONLY when the harness itself runs with --apply. */
-export function workflowChildArgs(a: { w6w: string; tokenFile: string; channelId: string; org: string; cohostConn: string; fliteConn: string; apply: boolean }): string[] {
-  const args = ["--w6w", a.w6w, "--token-file", a.tokenFile, "--var", "env=sandbox", "--var", `channelId=${a.channelId}`, "--var", `org=${a.org}`, "--connection", `cohost=${a.cohostConn}`, "--connection", `flite=${a.fliteConn}`];
+export function workflowChildArgs(a: { w6w: string; tokenFile: string; channelId: string; cohostConn: string; fliteConn: string; apply: boolean }): string[] {
+  // channelId is the only variable: the Flite connection decides the environment and account.
+  const args = ["--w6w", a.w6w, "--token-file", a.tokenFile, "--var", `channelId=${a.channelId}`, "--connection", `cohost=${a.cohostConn}`, "--connection", `flite=${a.fliteConn}`];
   if (a.apply) args.push("--apply");
   return args;
 }
@@ -194,11 +195,11 @@ export async function setup(h: Harness): Promise<number> {
   bindChannelTriggers(wfJson, channelId);
   const installFile = join(h.out, "workflow.installed.json");
   writeFileSync(installFile, JSON.stringify(wfJson, null, 2) + "\n");
-  const wfArgs = workflowChildArgs({ w6w: h.w6w, tokenFile: h.o.flags["token-file"], channelId, org: fliteOrg, cohostConn: cohost.id, fliteConn: flite.id, apply: h.o.apply });
+  const wfArgs = workflowChildArgs({ w6w: h.w6w, tokenFile: h.o.flags["token-file"], channelId, cohostConn: cohost.id, fliteConn: flite.id, apply: h.o.apply });
   const wf = (cmd: string) => execFileSync(process.execPath, [join(SCRIPT_DIR, "workflow.ts"), cmd, installFile, ...wfArgs], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   log(wf("install").trim()); // POST /workflows on an existing id answers 201 (replaces the definition)
   log(wf("publish").trim());
-  state.workflow = { id: WF_ID, installed: true, vars: { env: "sandbox", channelId, org: fliteOrg } };
+  state.workflow = { id: WF_ID, installed: true, vars: { channelId } };
 
   // (e) exactly 2 active subscriptions, bounded retry (<= 90 s)
   let subs: any[] = [];

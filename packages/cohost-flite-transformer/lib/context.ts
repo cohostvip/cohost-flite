@@ -23,10 +23,10 @@ export const sourceParams: Param[] = [
   companyIdParam(),
   {
     key: "connectionId",
-    label: "Cohost source connection ID",
+    label: "Flite connection ID",
     type: "string",
     required: true,
-    hint: "The source identity used by your Cohost mappings, not the W6W connection ID.",
+    hint: "The Flite connection the data came through: bind it to the Flite step's Connection ID ({{ steps.<flite step>.meta.connectionId }}). It is the source segment of every URN, the same one Sync Event registers mappings under. No connection, no transform.",
   },
 ];
 

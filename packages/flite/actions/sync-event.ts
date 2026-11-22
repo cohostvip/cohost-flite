@@ -4,7 +4,8 @@ import { FliteClient } from "../lib/client.ts";
 import {
   type DesiredState,
   type DesiredTicket,
-  guardEnv,
+  connectionEnv,
+  scopeMappings,
   planMappings,
   registration,
   connectionSegment,
@@ -17,7 +18,6 @@ import { ticketProperties } from "./update-ticket.ts";
 
 export interface SyncEventInput {
   desired: DesiredState;
-  expectedEnv: "sandbox" | "production";
 }
 
 export default {
@@ -30,13 +30,6 @@ export default {
     "Reconcile a desired Flite event state against its durable URN mappings: create once, update, stop or reopen. Never deletes.",
   params: [
     { key: "desired", label: "Desired state", type: "json", required: true },
-    {
-      key: "expectedEnv",
-      label: "Expected environment",
-      type: "select",
-      required: true,
-      options: [{ label: "Sandbox", value: "sandbox" }, { label: "Production", value: "production" }],
-    },
   ],
   output: [
     { key: "eventId", label: "Flite event ID", type: "string" },
@@ -48,10 +41,10 @@ export default {
     { key: "warnings", label: "Warnings", type: "array" },
   ],
   async execute(input, ctx): Promise<SyncOutput> {
-    const desired = input.desired;
-    // The env guard runs before any request.
-    const env = guardEnv(ctx, input.expectedEnv, desired);
     const connectionId = connectionSegment(ctx);
+    // The Flite environment is the connection's own (a staging auth targets the sandbox API).
+    const env = connectionEnv(ctx);
+    const desired = { ...input.desired, mappings: scopeMappings(input.desired.mappings, input.desired.companyId, connectionId) };
     const out: SyncOutput = {
       eventId: "",
       env,

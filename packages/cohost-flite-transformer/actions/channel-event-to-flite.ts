@@ -3,8 +3,6 @@ import { buildDesiredState, type ChannelSnapshot, type DesiredState } from "../l
 
 export interface ChannelEventToFliteInput {
   snapshot: ChannelSnapshot;
-  env: string;
-  org: string;
   currency?: string;
 }
 
@@ -16,11 +14,9 @@ export default {
   idempotent: true,
   requiresAuth: false,
   description:
-    "Convert a Cohost sales-channel event snapshot to the desired Flite state (event, tickets, mode) for Sync Event. Pure; makes no requests.",
+    "Convert a Cohost sales-channel event snapshot to the desired Flite state (event, tickets, mode) for Sync Event. The Flite environment and account come from the Flite connection Sync Event runs with. Pure; makes no requests.",
   params: [
     { key: "snapshot", label: "Channel event snapshot", type: "json", required: true },
-    { key: "env", label: "Flite environment", type: "string", required: true, hint: "sandbox or production." },
-    { key: "org", label: "Flite organization", type: "string", required: true },
     { key: "currency", label: "Organization currency", type: "string", hint: "Defaults to USD." },
   ],
   output: [{ key: "desired", label: "Desired Flite state", type: "object" }],

@@ -4,7 +4,7 @@ import { buildDesiredState, type ChannelSnapshot } from "../lib/channel-sync.ts"
 import action from "../actions/channel-event-to-flite.ts";
 
 const URN = "urn:1:co:cohost-falcon:/events/ev1";
-const opts = { env: "sandbox", org: "org1" };
+const opts = {};
 
 function snap(over: Record<string, unknown> = {}): ChannelSnapshot {
   return {
@@ -122,7 +122,7 @@ test("event-level failures: event null plus error", () => {
 
 test("labels, ids and action wrapper", () => {
   const out = action.execute({ snapshot: snap(), ...opts }) as { desired: ReturnType<typeof buildDesiredState> };
-  assert.deepEqual(out.desired.labels, { provider: "flite", env: "sandbox", org: "org1", channelId: "ch1", listingId: "primary" });
+  assert.deepEqual(out.desired.labels, { provider: "flite", channelId: "ch1", listingId: "primary" });
   assert.equal(out.desired.eventUrn, URN);
 });
 

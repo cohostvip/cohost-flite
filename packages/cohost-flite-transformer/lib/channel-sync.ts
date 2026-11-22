@@ -32,10 +32,9 @@ export interface ChannelSnapshot {
   mappings: { event: MappingRecord[]; tickets: Record<string, MappingRecord[]> };
 }
 
+/** Mapping labels. The Flite environment and account are not labels: the connection id in every mapped URN scopes them. */
 export interface DesiredLabels {
   provider: string;
-  env: string;
-  org: string;
   channelId: string;
   listingId: string;
 }
@@ -65,8 +64,6 @@ export interface DesiredState {
 }
 
 export interface BuildOptions {
-  env: string;
-  org: string;
   currency?: string;
 }
 
@@ -138,14 +135,12 @@ function remaining(owner: Rec | undefined): number | undefined {
   return Math.max(0, capacity - (num(owner?.quantitySold) ?? 0));
 }
 
-export function buildDesiredState(snapshot: ChannelSnapshot, options: BuildOptions): DesiredState {
+export function buildDesiredState(snapshot: ChannelSnapshot, _options: BuildOptions = {}): DesiredState {
   const mode = decideMode(snapshot);
   const errors: Array<{ message: string; ticketId?: string }> = [];
   const eventUrn = snapshot.eventUrn;
   const labels: DesiredLabels = {
     provider: "flite",
-    env: options.env,
-    org: options.org,
     channelId: snapshot.channelId,
     listingId: str(snapshot.listing?.id),
   };

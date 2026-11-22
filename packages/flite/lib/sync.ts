@@ -1,7 +1,7 @@
 import { baseUrl, STAGING_API_URL } from "./client.ts";
 
 /**
- * Pure planner for Sync Event: env guard, mapping choice and registrations. No requests.
+ * Pure planner for Sync Event: connection scoping, mapping choice and registrations. No requests.
  * The desired-state types are a structural copy of the transformer's `lib/channel-sync.ts`:
  * each app is bundled standalone, so the two packages cannot import each other.
  */
@@ -30,7 +30,7 @@ export interface DesiredState {
   listingId: string;
   eventId: string;
   eventUrn: string;
-  labels: { provider: string; env: string; org: string; channelId: string; listingId: string };
+  labels: { provider: string; channelId: string; listingId: string };
   event: Record<string, string> | null;
   tickets: DesiredTicket[];
   mappings: { event: MappingRecord[]; tickets: Record<string, MappingRecord[]> };
@@ -66,20 +66,25 @@ export function connectionEnv(ctx: Parameters<typeof baseUrl>[0]): FliteEnv {
   return baseUrl(ctx) === STAGING_API_URL ? "sandbox" : "production";
 }
 
-/** Throws before any request when the connection disagrees with the workflow or the desired labels. */
-export function guardEnv(
-  ctx: Parameters<typeof baseUrl>[0],
-  expectedEnv: string,
-  desired: Pick<DesiredState, "labels">,
-): FliteEnv {
-  const env = connectionEnv(ctx);
-  if (expectedEnv !== "sandbox" && expectedEnv !== "production") {
-    throw new Error("expectedEnv must be sandbox or production");
-  }
-  if (env !== expectedEnv || env !== desired.labels?.env) {
-    throw new Error(`Connection is ${env} but the workflow expects ${expectedEnv}`);
-  }
-  return env;
+/**
+ * Only the mappings this connection made: a mapped URN is `urn:1:<company>:<connectionId>:/events/…`,
+ * so the connection id scopes the Flite environment and account. Records under another Flite
+ * connection (another account, or sandbox vs production) are ignored.
+ */
+export function scopeMappings(
+  mappings: DesiredState["mappings"] | undefined,
+  companyId: string,
+  connectionId: string,
+): DesiredState["mappings"] {
+  const prefix = `urn:1:${companyId}:${connectionId}:/events/`;
+  const own = (records: MappingRecord[] | undefined) =>
+    (records ?? []).filter((r) => {
+      const u = r?.mappedUrn ?? r?.urn;
+      return typeof u === "string" && u.startsWith(prefix);
+    });
+  const tickets: Record<string, MappingRecord[]> = {};
+  for (const [id, records] of Object.entries(mappings?.tickets ?? {})) tickets[id] = own(records);
+  return { event: own(mappings?.event), tickets };
 }
 
 /** The URN source segment: the Flite connection's own id (HookContext), never a pseudo id. */
@@ -185,7 +190,6 @@ export function registration(
     labels: {
       provider: l.provider,
       env,
-      org: l.org,
       channelId: l.channelId,
       listingId: l.listingId,
       kind: ticket ? "ticket" : "event",
