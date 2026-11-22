@@ -1,7 +1,7 @@
 # Flite sales channel (internal)
 
-A Cohost company-owned, non-public API channel mirrors its events onto Flite. A three-root w6w workflow
-re-reads current Cohost truth on every trigger and reconciles Flite against it; a third root imports inbound Flite orders (see Orders). It only ever creates,
+A Cohost company-owned, non-public API channel mirrors its events onto Flite. A four-root w6w workflow
+re-reads current Cohost truth on every trigger and reconciles Flite against it; a third root imports inbound Flite orders (see Orders) and a fourth, detached root backfills all orders on demand (see Order import (backfill)). It only ever creates,
 updates, stops and reopens; it never deletes anything on Flite.
 
 ## Pipeline
@@ -28,6 +28,18 @@ A third root imports inbound Flite orders: the Flite app's `order-placed` trigge
 - **Idempotency.** The order URN is `urn:1:<companyId>:flite-<env>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
 - **Mapped-event lookup and channel ownership.** `order_mapping` is `vip.cohost.w6w` `resolve-urn` (connection `cohost`) on the order's event URN (`steps.order_transform.output.order.contextId`), with no `labels` filter and no `type`. It returns that URN's own mapping doc `{urn, labels, resources}`, the doc sync registered for the Flite event. `order_guard` receives `{mapping, expected: {provider: "flite", env, org, channelId}}` (the last three from the workflow variables) and throws `unmapped Flite event: ...` unless `mapping.resources` is a non-empty array **and** every `expected` key equals `mapping.labels[key]`. So an event with no mapping, an empty mapping, or a mapping owned by another channel, env or org fails the run visibly and no order is created. Orders are never imported to a wrong event. `upsert-order` is reachable only through the guard.
 - **Out of scope.** Refunds and cancellations.
+
+## Order import (backfill)
+
+A fourth root, detached from the other three (no edges to or from the event, ticket or order-placed roots; it shares only `vars` and the `cohost` / `flite` connections, both bound at install), imports ALL existing Flite orders of a channel's mapped events into Cohost.
+
+- **Root shape.** `import_start` (`@w6w/trigger` `manual`) -> `import_list_events` (`list-channel-events`) -> `import_event_ids` (script) -> `import_each_event` (foreach: `ev_snapshot` -> `ev_target`) -> `import_pages` (`order-import-pages`) -> `import_each_page` (foreach: `page_fetch`, Flite `list-orders`, retry 3) -> `import_flatten` (`order-import-flatten`) -> `import_complete` (guard script) -> `import_each_order` (foreach: `imp_transform` (`transform-order`) -> `imp_upsert` (`upsert-order`, retry 3)). `validateImportRoot` in `scripts/workflow.ts` pins this shape.
+- **How to start.** Manual only. The optional Cohost event id is the install variable `importEventId` (default `""` = every event on the channel); `importMaxPages` (default 10) bounds paging. No new env vars.
+- **Pagination.** Flite `list-orders` returns `pagination.hasMore` / `nextPage`. The engine has no while-loop, so paging is a bounded foreach over pages 1..`importMaxPages` per event. Flatten consumes every page and marks an event truncated when its last fetched page still has `hasMore` or a non-null `nextPage`; `import_complete` then throws before any upsert, so nothing is imported for a truncated run.
+- **Idempotency.** Each order gets the stable URN `urn:1:<companyId>:flite-<env>:/orders/<id>` and `paymentMethod: "deferred"` from `transform-order`; `imp_upsert` is `upsert-order`, so re-running imports nothing twice. Orders are also de-duplicated by Flite `_id` per event before upsert.
+- **Skip rules.** An event is imported only if exactly one mapping has the URN `urn:1:<companyId>:flite-<env>:/events/<id>` AND its labels equal `{provider: flite, env, org, channelId}`. Unmapped or foreign-channel events are skipped visibly (`skipped` with a reason) and never imported. A Flite event mapped from two Cohost events is imported once.
+- **Deferred caveat (T8).** As for the order-placed root, the Cohost `POST /orders` strips a client-supplied `paymentMethod`, so recording the imported orders as deferred on the Cohost side depends on T8; the converter output itself is deferred.
+- **Known limits.** (a) The `importMaxPages` cap wastes empty-page calls for small events, and an event over the cap makes `import_complete` throw. (b) A channel with more than 100 events throws: `list-channel-events` is not paginated. (c) The nested binding `foreach.item.eventId` and body steps reading a sibling body step's output are assumed supported by the engine but were never run (no w6w writes or engine runs were allowed). (d) `get-channel-event-snapshot` is called without `listingId`; that is unverified.
 
 ## Behaviour (decisions D1–D7)
 
