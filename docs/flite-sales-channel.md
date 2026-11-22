@@ -6,8 +6,10 @@ updates, stops and reopens; it never deletes anything on Flite.
 
 ## Pipeline
 
-`channel-event-changed` (channel actions listed / changed / unlisted) and `ticket-changed`
-(created / updated / deleted) both feed one `@w6w/race` node, then:
+Two roots, both channel-scoped: `channel-event-changed` (channel actions listed / changed / unlisted) and
+`channel-ticket-changed` (ticket created / updated / deleted, passed only for events listed on the channel).
+Each takes a `channelId` param, so tickets of unrelated events never start a run. Both feed one `@w6w/race` node
+(payload `meta.{channelId, eventId, companyId, …}`), then:
 
 1. `get-channel-event-snapshot` (app `vip.cohost.w6w`) — channel view, owner event + tickets, listing, RMS mappings.
 2. `channel-event-to-flite` (`vip.cohost.transformers.flite`) — pure: snapshot → desired Flite state.
@@ -87,7 +89,7 @@ Notes:
 ## Install notes (T3 sandbox E2E)
 
 - The three tenant apps (`vip.cohost.w6w`, `vip.cohost.flite`, `vip.cohost.transformers.flite`) were built and installed into `.tenant-apps/cohost` digest-only: the version folders that `index.json` named were reused, and no version or folder was added. `vip.cohost.w6w` was built with `COHOST_API_URL=https://integrations-flite-s2.cohost.foo/api/v1`. `index-diff.py` confirms that only the digest-family fields of those three entries changed.
-- The w6w container (`devcontainer-api-1`) re-registered the folder at 19:14Z (`[tenant-apps] cohost: … vip.cohost.w6w bumped`). The `app.js` sha256 inside the container equals `execSha256` in `index.json`. The manifest carries actions `get-channel-event-snapshot` and `register-urn-mappings` and triggers `channel-event-changed` and `ticket-changed`.
+- The w6w container (`devcontainer-api-1`) re-registered the folder at 19:14Z (`[tenant-apps] cohost: … vip.cohost.w6w bumped`). The `app.js` sha256 inside the container equals `execSha256` in `index.json`. The manifest carries actions `get-channel-event-snapshot` and `register-urn-mappings` and triggers `channel-event-changed` and `channel-ticket-changed`.
 - Catalog caveat: tenant apps live in the `cohost` tenant tier. A default-tenant/system token sees `GET /apps` as 682 system apps and none of `vip.cohost.*`. Install, publish and run requests must therefore authenticate as the `cohost` tenant.
 - Preflight: `http://localhost:5999/api/v1/health` and `https://integrations-flite-s2.cohost.foo/api/v1/health` both returned 200 `{"status":"healthy"}`.
 - `artifacts/e2e/reinstall.sh` re-applies the slot-2 build and `restore.sh` restores the backup (sha256 checked).
@@ -99,7 +101,7 @@ Run with `node scripts/sandbox-e2e.ts setup --token-file <cohost-tenant token> -
 - **Connections.** `POST /apps/<appId>/connections` with `{authKey, displayName, credential}` (`POST /connections` is a 404); `POST /connections/<id>/test` re-checks. The Flite SANDBOX connection uses auth key `partner-login-staging` and the credential `{email, password}` taken from `oss/flite/.env.local`; it only ever travels in that body. The organization the connection landed on is `ORG A`, and that is what the workflow `org` variable carries (the variable is only a mapping label).
 - **Cohost connection.** Auth key `api-token` with the slot-2 auth-emulator bearer as the token. Its `test` reads `/orders?limit=1`, which answers 403 for the emulator user (company routes answer 200), so the test reports "token rejected" while the connection is `connected` and usable. The emulator token also expires after about an hour; re-run setup against a fresh connection if runs begin to answer 401.
 - **Channel.** `POST /company/sales-channels` needs `channel.filters` (`{tags:[], excludeContextId:[], includeContextId:[]}`); without it the API answers 500. Created as `type api`, `isPublic false`.
-- **Trigger params are stored unresolved.** After a plain install, the subscription for `channel-event-changed` stored `channelId` as the literal object `{"$":"vars.channelId"}`, so the T2 trigger's channel filter (`typeof params.channelId === "string"`) is skipped. `setup` therefore installs `artifacts/e2e/workflow.installed.json`, the T1 workflow with that one trigger's `channelId` written as the literal channel id; the stored subscription then shows `channelId: <id>`. `workflow.ts install` could do this substitution itself (follow-up); `ticket-changed` has no channel param, and the snapshot step decides channel membership.
+- **Trigger params are stored unresolved.** After a plain install, the subscription for `channel-event-changed` stored `channelId` as the literal object `{"$":"vars.channelId"}`, so the T2 trigger's channel filter (`typeof params.channelId === "string"`) is skipped. `setup` therefore installs `artifacts/e2e/workflow.installed.json`, the workflow with the `channelId` of BOTH triggers (`channel-event-changed`, `channel-ticket-changed`) written as the literal channel id; the stored subscription then shows `channelId: <id>`. `workflow.ts install --var channelId=<id>` now does this substitution itself (`bindChannelTriggers`). Both roots are channel-scoped; the former company-wide `ticket-changed` root is gone. Slot-2 / sold-count movement is still not in any channel signal.
 - **Subscriptions.** After publish there are exactly two, one per trigger node, both `enabled: true`, `status: registered`, `lastError: null` (`registered` is the active state). `POST /workflows` on an existing id answers 201 and replaces the definition; a following publish reconciles the subscriptions (the old `channel-event-changed` one is replaced, not duplicated).
 
 ## Sandbox findings (T3 E2E matrix, 2026-11-21)

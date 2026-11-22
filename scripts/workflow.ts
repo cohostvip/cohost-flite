@@ -7,7 +7,7 @@ type Json = Record<string, any>;
 
 /** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
 export const A_KEYS = ["get-channel-event-snapshot", "register-urn-mappings"] as const;
-export const A_TRIGGERS = ["channel-event-changed", "ticket-changed"] as const;
+export const A_TRIGGERS = ["channel-event-changed", "channel-ticket-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
 const APP_X = "vip.cohost.transformers.flite";
@@ -36,6 +36,9 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   const tkeys = triggers.map((n) => n.uses.action).sort();
   if (triggers.length !== 2 || tkeys.join() !== [...A_TRIGGERS].sort().join()) {
     errs.push(`need exactly two trigger nodes (${A_TRIGGERS.join(", ")}); found ${tkeys.join(", ") || "none"}`);
+  }
+  for (const t of triggers) {
+    if (t.with?.channelId === undefined) errs.push(`trigger ${t.id} must carry a channelId param`);
   }
   const races = nodes.filter((n) => n.uses?.app === RACE);
   if (races.length !== 1) errs.push("need exactly one @w6w/race node");
@@ -116,6 +119,15 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   return errs;
 }
 
+/** Writes the channel id literal into every trigger node's `with.channelId` (the engine stores trigger params unresolved). */
+export function bindChannelTriggers(wf: Json, channelId: string): void {
+  const triggers = (wf.nodes as Json[]).filter((n) => n.uses?.trigger === true);
+  for (const t of triggers) {
+    if (!t.with || t.with.channelId === undefined) throw new Error(`trigger ${t.id} has no channelId param to bind`);
+    t.with.channelId = channelId;
+  }
+}
+
 function parseArgs(argv: string[]) {
   const flags: Record<string, string> = {};
   const vars: Record<string, string> = {};
@@ -168,6 +180,7 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
       if (!d) throw new Error(`unknown --var ${k}`);
       d.default = v;
     }
+    if (o.vars.channelId) bindChannelTriggers(wf, o.vars.channelId);
     for (const [ref, id] of Object.entries(o.conns)) {
       if (!wf.connections?.[ref]) throw new Error(`unknown --connection ref ${ref}`);
       wf.connections[ref].connection = id;

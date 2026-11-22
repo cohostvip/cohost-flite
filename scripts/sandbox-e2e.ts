@@ -5,6 +5,7 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync, writeFileSync } fr
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bindChannelTriggers } from "./workflow.ts";
 import { assertSandbox, sandboxAuthKey } from "./sandbox-guard.ts";
 
 export const ROWS = Array.from({ length: 13 }, (_, i) => `R${i + 1}`);
@@ -188,11 +189,9 @@ export async function setup(h: Harness): Promise<number> {
 
   // (d) install + publish via T1's workflow.ts (argv carries only ids and paths)
   // The engine stores trigger `with` unresolved (`{"$":"vars.channelId"}` reached the T2 trigger as an object and its
-  // channel filter was skipped), so the install file binds the channel trigger's channelId as a literal.
+  // channel filter was skipped), so the install file binds both channel triggers' channelId as a literal.
   const wfJson = JSON.parse(readFileSync(join(SCRIPT_DIR, "..", WF_FILE), "utf8"));
-  const chTrigger = wfJson.nodes.find((n: any) => n.uses?.trigger === true && n.uses.action === "channel-event-changed");
-  if (!chTrigger?.with || chTrigger.with.channelId === undefined) throw new Error("channel-event-changed trigger has no channelId param to bind");
-  chTrigger.with.channelId = channelId;
+  bindChannelTriggers(wfJson, channelId);
   const installFile = join(h.out, "workflow.installed.json");
   writeFileSync(installFile, JSON.stringify(wfJson, null, 2) + "\n");
   const wfArgs = workflowChildArgs({ w6w: h.w6w, tokenFile: h.o.flags["token-file"], channelId, org: fliteOrg, cohostConn: cohost.id, fliteConn: flite.id, apply: h.o.apply });
@@ -240,7 +239,7 @@ export class Matrix {
     this.tag = `fsc-e2e-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   }
   get channelId(): string { return this.setup.channel.channelId; }
-  subId(trigger: "channel_changed" | "ticket_changed"): string {
+  subId(trigger: "channel_changed" | "channel_ticket_changed"): string {
     const s = (this.setup.subscriptions as any[]).find((x) => x.trigger === trigger);
     if (!s?.id) throw new Error(`setup.json has no ${trigger} subscription`);
     return s.id;
@@ -270,7 +269,7 @@ export class Matrix {
   }
 
   /** Cohost's webhook dispatcher does not run in slot-2: deliver the ping it would send, to the workflow's trigger URL. */
-  async ping(trigger: "channel_changed" | "ticket_changed", action: string, resourcePath: string, data?: Record<string, unknown>): Promise<string> {
+  async ping(trigger: "channel_changed" | "channel_ticket_changed", action: string, resourcePath: string, data?: Record<string, unknown>): Promise<string> {
     const id = `trg_fsc${rid()}`;
     const body = { id, action, timestamp: new Date().toISOString(), urn: `urn:1:acme-corp:cohost-falcon:${resourcePath}`, context: { companyId: "acme-corp", service: "cohost-falcon", resourcePath }, ...(data ? { data } : {}) };
     if (!this.h.o.apply) return id;
@@ -631,10 +630,10 @@ const R9: RowFn = async (m) => {
 };
 
 // ---- R10-R13: ticket lifecycle, capacity, cross-company, unsupported tickets ----
-/** Ticket-triggered cycle: one `ticket_changed` ping for a ticket of the event, then its single run. */
+/** Ticket-triggered cycle: one `channel_ticket_changed` ping for a ticket of the event, then its single run. */
 async function tcycle(m: Matrix, eventId: string, ticketId: string, action: "offering.created" | "offering.updated" | "offering.deleted") {
   const before = await m.runIds();
-  await m.ping("ticket_changed", action, `/events/${eventId}/tickets/${ticketId}`);
+  await m.ping("channel_ticket_changed", action, `/events/${eventId}/tickets/${ticketId}`);
   const run = (await m.waitRuns(before, 1))[0];
   return { run, out: m.syncOut(run) };
 }
