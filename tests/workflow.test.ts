@@ -22,13 +22,17 @@ test("CLI validate exits 0 on the file and 1 on a missing one", () => {
 });
 
 const mutations: Array<[string, (wf: any) => void, RegExp]> = [
-  ["remove a trigger", (wf) => {
-    wf.nodes = wf.nodes.filter((n: any) => n.id !== "channel_ticket_changed");
-    wf.edges = wf.edges.filter((e: any) => e.from !== "channel_ticket_changed");
-  }, /two trigger nodes/],
-  ["old ticket-changed key rejected", (wf) => { node(wf, "channel_ticket_changed").uses.action = "ticket-changed"; }, /unknown trigger|two trigger nodes/],
-  ["ticket trigger without channelId", (wf) => { delete node(wf, "channel_ticket_changed").with.channelId; }, /channel_ticket_changed must carry a channelId/],
-  ["event trigger without channelId", (wf) => { delete node(wf, "channel_changed").with.channelId; }, /channel_changed must carry a channelId/],
+  ["remove the channel trigger", (wf) => {
+    wf.nodes = wf.nodes.filter((n: any) => n.id !== "channel_changed");
+    wf.edges = wf.edges.filter((e: any) => e.from !== "channel_changed");
+  }, /exactly one channel trigger node/],
+  ["old two-trigger shape rejected", (wf) => {
+    wf.nodes.push({ id: "channel_ticket_changed", uses: { app: "vip.cohost.w6w", action: "channel-changed", trigger: true, connectionRef: "cohost" }, with: { channelId: { $: "vars.channelId" } } });
+    wf.edges.push({ from: "channel_ticket_changed", to: "race" });
+  }, /exactly one channel trigger node/],
+  ["old event-changed key rejected", (wf) => { node(wf, "channel_changed").uses.action = "channel-event-changed"; }, /unknown trigger|exactly one channel trigger node/],
+  ["old ticket-changed key rejected", (wf) => { node(wf, "channel_changed").uses.action = "channel-ticket-changed"; }, /unknown trigger|exactly one channel trigger node/],
+  ["channel trigger without channelId", (wf) => { delete node(wf, "channel_changed").with.channelId; }, /channel_changed must carry a channelId/],
   ["dangling edge", (wf) => wf.edges.push({ from: "sync", to: "ghost" }), /unknown node ghost/],
   ["renamed A key", (wf) => { node(wf, "register").uses.action = "register-urn-mapping"; }, /unknown vip\.cohost\.w6w action/],
   ["register retry < 3", (wf) => { node(wf, "register").retry.maxAttempts = 2; }, /maxAttempts >= 3/],
@@ -149,32 +153,32 @@ test("no process.env in the script and no credentials in the JSON", () => {
   assert.ok(!/(bearer|secret|token"\s*:|apiKey|password)/i.test(readFileSync(FILE, "utf8")));
 });
 
-test("workflow has the two channel-scoped roots plus the Flite order root, and no ticket-changed key", () => {
+test("workflow has the one channel-scoped root plus the Flite order root, and no old trigger keys", () => {
   const wf = load();
   const all = wf.nodes.filter((n: any) => n.uses.trigger === true);
   assert.deepEqual(all.map((n: any) => [n.id, n.uses.app, n.uses.action]).sort(), [
-    ["channel_changed", "vip.cohost.w6w", "channel-event-changed"],
-    ["channel_ticket_changed", "vip.cohost.w6w", "channel-ticket-changed"],
+    ["channel_changed", "vip.cohost.w6w", "channel-changed"],
     ["order_placed", "vip.cohost.flite", "order-placed"],
   ]);
   const t = all.filter((n: any) => n.id !== "order_placed");
   for (const n of t) assert.deepEqual(n.with.channelId, { $: "vars.channelId" });
-  assert.deepEqual(node(wf, "channel_ticket_changed").with.actions, ["created", "updated", "deleted"]);
-  assert.deepEqual(wf.edges.filter((e: any) => e.from === "channel_ticket_changed"), [{ from: "channel_ticket_changed", to: "race" }]);
-  assert.ok(!/ticket[-_]changed/.test(readFileSync(FILE, "utf8").replace(/channel[-_]ticket[-_]changed/g, "")));
+  assert.deepEqual(node(wf, "channel_changed").with.actions, ["event.change", "ticket.change"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.from === "channel_changed"), [{ from: "channel_changed", to: "race" }]);
+  assert.ok(!wf.nodes.some((n: any) => n.id === "channel_ticket_changed"));
+  assert.ok(!/channel[-_](event|ticket)[-_]changed/.test(readFileSync(FILE, "utf8")));
 });
 
-test("install --apply with --var channelId binds the literal on BOTH trigger nodes", async () => {
+test("install --apply with --var channelId binds the literal on the channel trigger node", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wf-"));
   const tf = join(dir, "tok");
   writeFileSync(tf, "t\n");
   const { o, io } = mkIo();
   assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "channelId=ch_X", "--apply"], io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
-  for (const id of ["channel_changed", "channel_ticket_changed"]) assert.equal(node(sent, id).with.channelId, "ch_X");
+  assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
   const src = load();
   bindChannelTriggers(src, "ch_Y");
-  assert.equal(node(src, "channel_ticket_changed").with.channelId, "ch_Y");
+  assert.equal(node(src, "channel_changed").with.channelId, "ch_Y");
 });
 
 // Minimal resolver for {"$": "a.b.c"} refs, enough to prove which payload path each ref reads.
@@ -184,13 +188,13 @@ const resolve = (v: any, ctx: any): any => {
   return v;
 };
 
-test("snapshot expressions resolve channelId/eventId/companyId for both roots", () => {
+test("snapshot expressions resolve channelId/eventId/companyId for both actions", () => {
   const w = node(load(), "snapshot").with;
   assert.equal(w.eventId.$, "steps.race.output.meta.eventId");
   assert.equal(w.companyId.$, "steps.race.output.meta.companyId");
   assert.equal(w.channelId.$, "vars.channelId");
   assert.equal(w.mappingLabels.channelId.$, "vars.channelId");
-  for (const root of ["channel_changed", "channel_ticket_changed"]) {
+  for (const root of ["event.change", "ticket.change"]) {
     const payload = { meta: { channelId: "ch1", eventId: `ev_${root}`, companyId: "co1" } };
     const r = resolve(w, { vars: { channelId: "ch1", env: "sandbox", org: "o" }, steps: { race: { output: payload } } });
     assert.equal(r.eventId, `ev_${root}`);
@@ -212,7 +216,7 @@ test("order root: wired order_placed -> transform -> mapping -> guard -> upsert;
   }
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "order_upsert"), [{ from: "order_guard", to: "order_upsert" }]);
   assert.equal(wf.edges.filter((e: any) => e.from === "order_upsert").length, 0);
-  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed", "channel_ticket_changed"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.equal(node(wf, "order_placed").uses.connectionRef, "flite");
   assert.equal(node(wf, "order_mapping").uses.connectionRef, "cohost");
   assert.equal(node(wf, "order_upsert").uses.connectionRef, "cohost");
@@ -280,7 +284,7 @@ test("install --apply binds companyId and connections on the order-root nodes; o
     assert.equal(node(sent, id).uses.connectionRef, ref);
     assert.ok(sent.connections[ref].connection, `${id} -> ${ref} bound`);
   }
-  for (const id of ["channel_changed", "channel_ticket_changed"]) assert.equal(node(sent, id).with.channelId, "ch_X");
+  assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
   assert.equal(node(sent, "order_placed").with, undefined, "order trigger gets no channelId");
   assert.equal(node(sent, "order_guard").with.input.expected.channelId.$, "vars.channelId", "guard expected labels stay variable refs");
   const bad = mkIo();
@@ -377,7 +381,7 @@ test("import root: four roots, the import root is detached from the other three"
   const wf = load();
   assert.deepEqual(await validateWorkflow(wf), []);
   assert.deepEqual(validateImportRoot(wf, wf.nodes, wf.edges), []);
-  assert.deepEqual(wf.nodes.filter((n: any) => n.uses.trigger === true).map((n: any) => n.id).sort(), ["channel_changed", "channel_ticket_changed", "order_placed"]);
+  assert.deepEqual(wf.nodes.filter((n: any) => n.uses.trigger === true).map((n: any) => n.id).sort(), ["channel_changed", "order_placed"]);
   assert.deepEqual(node(wf, "import_start").uses, { app: "@w6w/trigger", action: "manual" });
   assert.equal(wf.edges.filter((e: any) => e.to === "import_start").length, 0);
   // not one edge crosses the boundary, in either direction
@@ -388,7 +392,7 @@ test("import root: four roots, the import root is detached from the other three"
     const refs = [...JSON.stringify(n.with ?? {}).matchAll(/"steps\.([A-Za-z0-9_-]+)\./g)].map((m) => m[1]);
     for (const r of refs) assert.equal(IMPORT_IDS.includes(n.id), IMPORT_IDS.includes(r), `${n.id} reads steps.${r}`);
   }
-  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed", "channel_ticket_changed"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "imp_upsert"), [{ from: "imp_transform", to: "imp_upsert" }]);
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "import_each_order"), [{ from: "import_complete", to: "import_each_order" }]);
   assert.equal(node(wf, "imp_upsert").uses.action, "upsert-order");

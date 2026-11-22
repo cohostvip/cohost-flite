@@ -7,7 +7,7 @@ type Json = Record<string, any>;
 
 /** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
 export const A_KEYS = ["get-channel-event-snapshot", "list-channel-events", "register-urn-mappings", "resolve-urn", "upsert-order"] as const;
-export const A_TRIGGERS = ["channel-event-changed", "channel-ticket-changed"] as const;
+export const A_TRIGGERS = ["channel-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
 const APP_X = "vip.cohost.transformers.flite";
@@ -36,8 +36,8 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   const orderTriggers = nodes.filter(isOrderTrigger);
   const triggers = nodes.filter((n) => n.uses?.trigger === true && !isOrderTrigger(n));
   const tkeys = triggers.map((n) => n.uses.action).sort();
-  if (triggers.length !== 2 || tkeys.join() !== [...A_TRIGGERS].sort().join()) {
-    errs.push(`need exactly two trigger nodes (${A_TRIGGERS.join(", ")}); found ${tkeys.join(", ") || "none"}`);
+  if (triggers.length !== 1 || tkeys.join() !== [...A_TRIGGERS].sort().join()) {
+    errs.push(`need exactly one channel trigger node (${A_TRIGGERS.join(", ")}); found ${tkeys.join(", ") || "none"}`);
   }
   if (orderTriggers.length !== 1) errs.push(`need exactly one ${APP_F} order-placed trigger node (the third root); found ${orderTriggers.length}`);
   for (const t of triggers) {

@@ -21,13 +21,8 @@
   "nodes": [
     {
       "id": "channel_changed",
-      "uses": { "app": "vip.cohost.w6w", "action": "channel-event-changed", "trigger": true, "connectionRef": "cohost" },
-      "with": { "channelId": { "$": "vars.channelId" }, "actions": ["listed", "changed", "unlisted"] }
-    },
-    {
-      "id": "channel_ticket_changed",
-      "uses": { "app": "vip.cohost.w6w", "action": "channel-ticket-changed", "trigger": true, "connectionRef": "cohost" },
-      "with": { "channelId": { "$": "vars.channelId" }, "actions": ["created", "updated", "deleted"] }
+      "uses": { "app": "vip.cohost.w6w", "action": "channel-changed", "trigger": true, "connectionRef": "cohost" },
+      "with": { "channelId": { "$": "vars.channelId" }, "actions": ["event.change", "ticket.change"] }
     },
     {
       "id": "race",
@@ -240,7 +235,6 @@
   ],
   "edges": [
     { "from": "channel_changed", "to": "race" },
-    { "from": "channel_ticket_changed", "to": "race" },
     { "from": "race", "to": "snapshot" },
     { "from": "snapshot", "to": "desired" },
     { "from": "desired", "to": "sync" },
