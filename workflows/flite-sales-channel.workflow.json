@@ -3,10 +3,11 @@
   "id": "wf_flite-sales-channel",
   "key": "flite-sales-channel",
   "name": "Flite sales channel",
-  "description": "Publishes, updates and stops Cohost channel events on Flite. Connections are bound at install.",
+  "description": "Publishes, updates and stops Cohost channel events on Flite, and imports Flite orders into Cohost as deferred-payment orders. Connections are bound at install.",
   "trigger": { "type": "manual" },
   "variables": [
     { "key": "channelId", "type": "string", "required": true },
+    { "key": "companyId", "type": "string", "required": true },
     { "key": "env", "type": "string", "required": true },
     { "key": "org", "type": "string", "required": true },
     { "key": "currency", "type": "string", "default": "USD" }
@@ -77,6 +78,47 @@
         "code": "if (Array.isArray(input) && input.length > 0) { throw new Error('sync-event reported ' + input.length + ' error(s): ' + JSON.stringify(input)); } return { ok: true };",
         "input": { "$": "steps.sync.output.errors" }
       }
+    },
+    {
+      "id": "order_placed",
+      "uses": { "app": "vip.cohost.flite", "action": "order-placed", "trigger": true, "connectionRef": "flite" }
+    },
+    {
+      "id": "order_transform",
+      "uses": { "app": "vip.cohost.transformers.flite", "action": "transform-order" },
+      "with": {
+        "order": { "$": "steps.order_placed.output.order" },
+        "companyId": { "$": "vars.companyId" },
+        "env": { "$": "vars.env" }
+      }
+    },
+    {
+      "id": "order_mapping",
+      "uses": { "app": "vip.cohost.w6w", "action": "find-mapped-resources", "connectionRef": "cohost" },
+      "with": {
+        "urn": { "$": "steps.order_transform.output.order.contextId" },
+        "labels": {
+          "provider": "flite",
+          "env": { "$": "vars.env" },
+          "org": { "$": "vars.org" },
+          "channelId": { "$": "vars.channelId" },
+          "kind": "event"
+        }
+      }
+    },
+    {
+      "id": "order_guard",
+      "uses": { "app": "@w6w/script", "action": "run" },
+      "with": {
+        "code": "if (!Array.isArray(input) || input.length === 0) { throw new Error('unmapped Flite event: no URN mapping from this channel for the order event; order not imported'); } return { ok: true };",
+        "input": { "$": "steps.order_mapping.output.results" }
+      }
+    },
+    {
+      "id": "order_upsert",
+      "uses": { "app": "vip.cohost.w6w", "action": "upsert-order", "connectionRef": "cohost" },
+      "with": { "data": { "order": { "$": "steps.order_transform.output.order" } } },
+      "retry": { "maxAttempts": 3, "backoff": "exponential", "delayMs": 1000 }
     }
   ],
   "edges": [
@@ -86,6 +128,10 @@
     { "from": "snapshot", "to": "desired" },
     { "from": "desired", "to": "sync" },
     { "from": "sync", "to": "register" },
-    { "from": "register", "to": "report" }
+    { "from": "register", "to": "report" },
+    { "from": "order_placed", "to": "order_transform" },
+    { "from": "order_transform", "to": "order_mapping" },
+    { "from": "order_mapping", "to": "order_guard" },
+    { "from": "order_guard", "to": "order_upsert" }
   ]
 }
