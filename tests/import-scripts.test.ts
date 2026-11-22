@@ -5,6 +5,7 @@ import pagesAction from "../packages/cohost-flite-transformer/actions/order-impo
 import type { ImportPagesInput, ImportPagesOutput, ImportTarget } from "../packages/cohost-flite-transformer/actions/order-import-pages.ts";
 import flattenAction from "../packages/cohost-flite-transformer/actions/order-import-flatten.ts";
 import type { ImportFlattenInput, ImportFlattenOutput, ImportPageResult } from "../packages/cohost-flite-transformer/actions/order-import-flatten.ts";
+import type { CohostOrderPayload } from "../packages/cohost-flite-transformer/convert/order.ts";
 import transformOrder from "../packages/cohost-flite-transformer/actions/transform-order.ts";
 import { readCapture } from "./live-fixtures.ts";
 
@@ -19,18 +20,19 @@ const code = (id: string) => {
 const script = (id: string, input: unknown) => new Function("input", code(id))(input);
 
 const CO = "co1";
-const EXPECTED = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1" };
+const EXPECTED = { provider: "flite", channelId: "ch1" };
+const CONN = "conn_f";
 const mapping = (fliteId: string, over: Record<string, unknown> = {}) => {
   const mappedUrn = `urn:1:${CO}:conn_f:/events/${fliteId}`;
   return { urn: mappedUrn, mappedUrn, labels: { ...EXPECTED, listingId: "l1", kind: "event", ...over } };
 };
 const target = (eventId: string, mappings: unknown[]) =>
-  script("ev_target", { eventId, mappings, companyId: CO, expected: EXPECTED }) as ImportTarget;
+  script("ev_target", { eventId, mappings, companyId: CO, connectionId: CONN, expected: EXPECTED }) as ImportTarget;
 
 const plan = (i: ImportPagesInput) => (pagesAction.execute as (i: ImportPagesInput) => ImportPagesOutput)(i);
 const flatten = (i: ImportFlattenInput) => (flattenAction.execute as (i: ImportFlattenInput) => ImportFlattenOutput)(i);
 const transform = (input: Record<string, unknown>) =>
-  (transformOrder.execute as (i: never) => { order: Record<string, unknown>; context: { urn: string } })(input as never);
+  (transformOrder.execute as (i: never) => { data: CohostOrderPayload; urn: string })(input as never);
 
 const sample = () => readCapture<{ data: { orders: Array<Record<string, unknown>> } }>("event-9-orders-page-1").body.data.orders[0]!;
 const mkOrder = (n: number) => ({ ...structuredClone(sample()), _id: `65f1e00000000000000002${String(n).padStart(2, "0")}` });
@@ -48,7 +50,7 @@ function runImport(cohostEvents: Array<[string, unknown[]]>, flite: Record<strin
   const planned = plan({ targets, maxPages });
   const flat = flatten({ jobs: planned.jobs, pages: serve(flite)(planned.jobs), skipped: planned.skipped });
   script("import_complete", { truncated: flat.truncated, skipped: flat.skipped, count: flat.count });
-  const upserts = flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: CO, connectionId: "conn_f" }));
+  const upserts = flat.items.map((it) => transform({ order: it.order, companyId: CO, connectionId: CONN, channelId: "ch1" }));
   return { planned, flat, upserts };
 }
 const THREE = { "9": [pg([1, 2], 1, true), pg([3, 4], 2, true), pg([5], 3, false)] };
@@ -62,8 +64,7 @@ test("ev_target: unmapped / foreign-labelled / malformed mappings are skipped wi
     ["no mappings", [], /unmapped/],
     ["mappings not an array", undefined as never, /unmapped/],
     ["other channel", [mapping("9", { channelId: "ch2" })], /unmapped/],
-    ["other env label", [mapping("9", { env: "production" })], /unmapped/],
-    ["other org", [mapping("9", { org: "o2" })], /unmapped/],
+    ["another Flite connection (other account or sandbox vs production)", [{ ...mapping("9"), urn: `urn:1:${CO}:conn_other:/events/9`, mappedUrn: `urn:1:${CO}:conn_other:/events/9` }], /unmapped/],
     ["other provider", [mapping("9", { provider: "eventbrite" })], /unmapped/],
     ["label dropped", [mapping("9", { channelId: undefined })], /unmapped/],
     ["empty source segment in the URN", [{ ...mapping("9"), urn: `urn:1:${CO}::/events/9`, mappedUrn: undefined }], /unmapped/],
@@ -77,8 +78,9 @@ test("ev_target: unmapped / foreign-labelled / malformed mappings are skipped wi
     assert.equal(t.fliteEventId, undefined, name);
     assert.match(String(t.reason), reason, name);
   }
-  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, expected: {} }).mapped, false, "no expected labels never maps");
-  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, expected: { ...EXPECTED, org: "" } }).mapped, false, "empty expected label never maps");
+  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, connectionId: CONN, expected: {} }).mapped, false, "no expected labels never maps");
+  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, connectionId: CONN, expected: { ...EXPECTED, channelId: "" } }).mapped, false, "empty expected label never maps");
+  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, connectionId: "", expected: EXPECTED }).mapped, false, "no Flite connection never maps");
 });
 
 test("unmapped / foreign-channel event: skipped visibly, zero page jobs, zero orders, zero upserts", () => {
@@ -103,22 +105,24 @@ test("3-page event: all pages consumed, every order has a stable URN and deferre
   assert.equal(r.flat.count, 5);
   assert.equal(r.upserts.length, 5);
   for (const u of r.upserts) {
-    assert.equal(u.order.paymentMethod, "deferred");
-    assert.match(u.context.urn, new RegExp(`^urn:1:${CO}:conn_f:/orders/65f1e00000000000000002\\d\\d$`));
+    assert.equal(u.data.order.paymentMethod, "deferred");
+    assert.equal(u.data.source.system, "flite");
+    assert.equal(u.data.order.context?.channelId, "ch1");
+    assert.match(u.urn, new RegExp(`^urn:1:${CO}:conn_f:/orders/65f1e00000000000000002\\d\\d$`));
   }
 });
 
 test("re-run: identical upsert keys (order.urn in the upsert-order payload), no new identities", () => {
   const first = runImport([["evt_1", [mapping("9")]]], THREE).upserts;
   const second = runImport([["evt_1", [mapping("9")]]], structuredClone(THREE)).upserts;
-  const key = (u: { order: Record<string, unknown> }) => u.order.urn as string;
+  const key = (u: { data: CohostOrderPayload }) => u.data.order.urn as string;
   const a = first.map(key);
   const b = second.map(key);
   assert.equal(a.length, 5);
   for (const k of a) assert.match(k, new RegExp(`^urn:1:${CO}:conn_f:/orders/65f1e00000000000000002\\d\\d$`));
   assert.deepEqual(a, b);
   assert.equal(new Set(a).size, a.length);
-  assert.deepEqual(a, first.map((u) => u.context.urn), "payload key equals the context urn");
+  assert.deepEqual(a, first.map((u) => u.urn), "payload key equals the output urn");
 });
 
 test("empty first page: nothing to import and no failure", () => {
@@ -137,8 +141,9 @@ test("import_event_ids: explicit id wins, else every channel event; an incomplet
   assert.throws(() => script("import_event_ids", { eventId: "", results: [{ id: "a" }], total: 3 }), /import not started/);
 });
 
-test("ev_target matches any source segment (the Flite connection id), not a pseudo flite-<env> id", () => {
-  const t = target("evt_1", [{ ...mapping("9"), urn: `urn:1:${CO}:conn_zzz:/events/9`, mappedUrn: undefined }]);
+test("ev_target matches only this Flite connection's source segment", () => {
+  const t = target("evt_1", [{ ...mapping("9"), urn: `urn:1:${CO}:${CONN}:/events/9`, mappedUrn: undefined }]);
   assert.equal(t.mapped, true);
   assert.equal(t.fliteEventId, "9");
+  assert.equal(target("evt_1", [{ ...mapping("9"), urn: `urn:1:${CO}:conn_zzz:/events/9`, mappedUrn: undefined }]).mapped, false);
 });

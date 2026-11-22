@@ -42,10 +42,14 @@ const mutations: Array<[string, (wf: any) => void, RegExp]> = [
   }, /terminal step|missing edge/],
   ["unknown F action", (wf) => { node(wf, "sync").uses.action = "sync-events"; }, /not in flite index/],
   ["listingId in mappingLabels", (wf) => { node(wf, "snapshot").with.mappingLabels.listingId = "x"; }, /mappingLabels/],
-  ["mappingLabels.env not bound to vars.env", (wf) => { node(wf, "snapshot").with.mappingLabels.env = "sandbox"; }, /mappingLabels\.env/],
-  ["mappingLabels.env bound to another var", (wf) => { node(wf, "snapshot").with.mappingLabels.env = { $: "vars.org" }; }, /mappingLabels\.env/],
-  ["expectedEnv not bound to vars.env", (wf) => { node(wf, "sync").with.expectedEnv = { $: "vars.org" }; }, /expectedEnv/],
-  ["expectedEnv literal", (wf) => { node(wf, "sync").with.expectedEnv = "production"; }, /expectedEnv/],
+  ["env label brought back", (wf) => { node(wf, "snapshot").with.mappingLabels.env = "sandbox"; }, /mappingLabels must be exactly/],
+  ["mappingLabels channelId literal", (wf) => { node(wf, "snapshot").with.mappingLabels.channelId = "ch1"; }, /mappingLabels must be exactly/],
+  ["expectedEnv brought back", (wf) => { node(wf, "sync").with.expectedEnv = "production"; }, /sync must not pass expectedEnv/],
+  ["env passed to the channel transformer", (wf) => { node(wf, "desired").with.env = "sandbox"; }, /channel-event-to-flite must not pass env/],
+  ["org passed to the channel transformer", (wf) => { node(wf, "desired").with.org = "o1"; }, /channel-event-to-flite must not pass org/],
+  ["env variable brought back", (wf) => { wf.variables.push({ key: "env", type: "string", required: true }); }, /variables must be exactly channelId/],
+  ["vars.env reference", (wf) => { node(wf, "sync").with.extra = { $: "vars.env" }; }, /vars\.env .* forbidden/],
+  ["snapshot companyId passed", (wf) => { node(wf, "snapshot").with.companyId = { $: "steps.channel_changed.output.meta.companyId" }; }, /snapshot must not pass companyId/],
   ["snapshot input missing on transformer", (wf) => { delete node(wf, "desired").with.snapshot; }, /snapshot must be bound/],
   ["report code does not throw", (wf) => { node(wf, "report").with.code = "return { ok: true };"; }, /must throw when errors/],
   ["report throws unconditionally", (wf) => { node(wf, "report").with.code = "throw new Error('x');"; }, /must throw when errors/],
@@ -54,6 +58,20 @@ const mutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["key with underscore", (wf) => { wf.key = "flite_sales_channel"; }, /key must be an account slug/],
   ["embedded connection id", (wf) => { node(wf, "sync").uses.connection = "conn_1"; }, /embeds a connection id/],
 ];
+mutations.push(
+  ["step without a note", (wf) => { delete node(wf, "sync").notes; }, /node sync: needs a notes line/],
+  ["step without a position", (wf) => { delete node(wf, "sync").position; }, /node sync: needs a position/],
+  ["canvas removed", (wf) => { delete wf.canvas; }, /canvas with sections and notes is required/],
+  ["step left out of every section", (wf) => {
+    for (const s of wf.canvas.sections) s.nodes = s.nodes.filter((id: string) => id !== "page_fetch");
+  }, /node page_fetch is in no canvas section/],
+  ["step in two sections", (wf) => { wf.canvas.sections[0].nodes.push("order_upsert"); }, /node order_upsert is in two sections/],
+  ["section names a renamed step", (wf) => { wf.canvas.sections[1].nodes.push("ghost"); }, /names unknown node ghost/],
+  ["bad section colour", (wf) => { wf.canvas.sections[0].color = "blue"; }, /color must match #rrggbb/],
+  ["duplicate canvas id", (wf) => { wf.canvas.notes[0].id = wf.canvas.sections[0].id; }, /already used on the canvas/],
+  ["unknown canvas key", (wf) => { wf.canvas.frames = []; }, /canvas\.frames is not a known key/],
+);
+
 for (const [name, mutate, re] of mutations) {
   test(`mutation rejected: ${name}`, async () => {
     const wf = load();
@@ -116,18 +134,18 @@ test("dry run makes no request; --apply sends once with bearer from file; output
   const base = ["--w6w", "http://h", "--project", "p", "--token-file", tf];
   for (const cmd of ["install", "publish"]) {
     const { o, io } = mkIo();
-    assert.equal(await main([cmd, FILE, ...base, "--var", "env=sandbox"], io), 0);
+    assert.equal(await main([cmd, FILE, ...base], io), 0);
     assert.equal(o.calls.length, 0, "no request without --apply");
     assert.equal(o.out.length, 1);
     assert.equal(o.out[0], cmd === "install" ? "POST http://h/workflows?project=p" : "POST http://h/workflows/wf_flite-sales-channel/publish");
   }
   const inst = mkIo();
-  assert.equal(await main(["install", FILE, ...base, "--var", "env=sandbox", "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"], inst.io), 0);
+  assert.equal(await main(["install", FILE, ...base, "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"], inst.io), 0);
   const sent = JSON.parse(inst.o.calls[0].init.body);
   assert.equal(sent.id, "wf_flite-sales-channel");
   assert.equal(sent.connections.cohost.connection, "conn_c");
   assert.equal(sent.connections.flite.connection, "conn_f");
-  assert.equal(sent.variables.find((v: any) => v.key === "env").default, "sandbox");
+  assert.deepEqual(sent.variables.map((v: any) => v.key), ["channelId"]);
   const { o, io } = mkIo();
   assert.equal(await main(["publish", FILE, ...base, "--apply"], io), 0);
   assert.equal(o.calls.length, 1);
@@ -173,7 +191,7 @@ test("install --apply with --var channelId binds the literal on the channel trig
   const tf = join(dir, "tok");
   writeFileSync(tf, "t\n");
   const { o, io } = mkIo();
-  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "channelId=ch_X", "--apply"], io), 0);
+  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "channelId=ch_X", "--apply"], io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
   assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
   const src = load();
@@ -188,20 +206,21 @@ const resolve = (v: any, ctx: any): any => {
   return v;
 };
 
-test("snapshot expressions resolve channelId/eventId/companyId for both actions", () => {
+test("snapshot expressions resolve channelId/eventId; companyId is the hidden const, not passed", () => {
   const w = node(load(), "snapshot").with;
   assert.equal(w.eventId.$, "steps.channel_changed.output.meta.eventId");
-  assert.equal(w.companyId.$, "steps.channel_changed.output.meta.companyId");
+  assert.equal("companyId" in w, false);
   assert.equal(w.channelId.$, "vars.channelId");
-  assert.equal(w.mappingLabels.channelId.$, "vars.channelId");
+  assert.deepEqual(w.mappingLabels, { provider: "flite", channelId: { $: "vars.channelId" } });
   for (const root of ["event.change", "ticket.change"]) {
     const payload = { meta: { channelId: "ch1", eventId: `ev_${root}`, companyId: "co1" } };
-    const r = resolve(w, { vars: { channelId: "ch1", env: "sandbox", org: "o" }, steps: { channel_changed: { output: payload } } });
+    const r = resolve(w, { vars: { channelId: "ch1" }, steps: { channel_changed: { output: payload } } });
     assert.equal(r.eventId, `ev_${root}`);
-    assert.equal(r.companyId, "co1");
     assert.equal(r.channelId, "ch1");
     assert.equal(r.mappingLabels.channelId, "ch1");
   }
+  assert.deepEqual(node(load(), "desired").with, { snapshot: { $: "steps.snapshot.output" } });
+  assert.deepEqual(node(load(), "sync").with, { desired: { $: "steps.desired.output.desired" } });
 });
 
 // ---- third root: Flite order-placed -> transform -> upsert-order (the Cohost order API resolves URNs) ----
@@ -220,7 +239,7 @@ test("order root: wired order_placed -> transform -> upsert (no URN pre-resolve)
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "snapshot").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.equal(node(wf, "order_placed").uses.connectionRef, "flite");
   assert.equal(node(wf, "order_upsert").uses.connectionRef, "cohost");
-  assert.deepEqual(wf.variables.map((v: any) => v.key), ["channelId", "env", "org"]);
+  assert.deepEqual(wf.variables.map((v: any) => v.key), ["channelId"]);
   assert.ok(wf.variables.every((v: any) => v.required === true));
   assert.ok(!/vars\.(companyId|currency|importEventId|importMaxPages)/.test(JSON.stringify(wf)));
   assert.ok(!/process\.env/.test(JSON.stringify(wf)));
@@ -248,16 +267,19 @@ const orderMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["order trigger connectionRef missing", (wf) => { delete node(wf, "order_placed").uses.connectionRef; }, /order_placed must use connectionRef flite/],
   ["flite connection undeclared", (wf) => { delete wf.connections.flite; }, /connectionRef flite is not declared/],
   ["upsert replaced by a non-upsert action", (wf) => { node(wf, "order_upsert").uses.action = "create-order"; }, /unknown vip\.cohost\.w6w action|missing order-root step upsert-order/],
-  ["companyId variable rejected", (wf) => { wf.variables.push({ key: "companyId", type: "string", required: true }); }, /variables must be exactly channelId, env, org/],
+  ["companyId variable rejected", (wf) => { wf.variables.push({ key: "companyId", type: "string", required: true }); }, /variables must be exactly channelId/],
   ["extra variable rejected", (wf) => { wf.variables.push({ key: "currency", type: "string", default: "USD" }); }, /variables must be exactly/],
-  ["variable missing", (wf) => { wf.variables = wf.variables.filter((v: any) => v.key !== "org"); }, /variables must be exactly/],
+  ["variable missing", (wf) => { wf.variables = []; }, /variables must be exactly/],
   ["vars.companyId ref rejected", (wf) => { node(wf, "snapshot").with.companyId = { $: "vars.companyId" }; }, /vars\.companyId is forbidden/],
   ["transform companyId literal", (wf) => { node(wf, "order_transform").with.companyId = "co1"; }, /companyId must not be passed/],
   ["transform companyId bound to vars", (wf) => { node(wf, "order_transform").with.companyId = { $: "vars.companyId" }; }, /companyId must not be bound to vars\.companyId/],
   ["transform connectionId bound to vars", (wf) => { node(wf, "order_transform").with.connectionId = { $: "vars.connectionId" }; }, /connectionId must not be bound to vars\.connectionId/],
   ["transform connectionId not from the order trigger meta", (wf) => { node(wf, "order_transform").with.connectionId = "c1"; }, /transform-order\.connectionId must be bound to steps\.order_placed\.meta\.connectionId/],
   ["desired transformer given companyId via vars", (wf) => { node(wf, "desired").with.companyId = { $: "vars.companyId" }; }, /transformer node desired: companyId must not be bound to vars\.companyId/],
-  ["upsert data from raw order", (wf) => { node(wf, "order_upsert").with.data.order = { $: "steps.order_placed.output.order" }; }, /upsert-order\.data\.order/],
+  ["upsert data from raw order", (wf) => { node(wf, "order_upsert").with.data = { order: { $: "steps.order_placed.output.order" } }; }, /upsert-order\.data must be bound/],
+  ["upsert data only the order (no source, no attendees)", (wf) => { node(wf, "order_upsert").with.data = { order: { $: "steps.order_transform.output.data.order" } }; }, /upsert-order\.data must be bound/],
+  ["transform eventId brought back", (wf) => { node(wf, "order_transform").with.eventId = "e1"; }, /transform-order must not pass eventId/],
+  ["transform channelId unbound", (wf) => { delete node(wf, "order_transform").with.channelId; }, /transform-order\.channelId must be bound to vars\.channelId/],
   ["upsert retry < 3", (wf) => { node(wf, "order_upsert").retry.maxAttempts = 1; }, /upsert-order step needs retry/],
 ];
 for (const [name, mutate, re] of orderMutations) {
@@ -274,11 +296,11 @@ test("install --apply binds companyId and connections on the order-root nodes; o
   const tf = join(dir, "tok");
   writeFileSync(tf, "t\n");
   const { o, io } = mkIo();
-  const args = ["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "channelId=ch_X",
+  const args = ["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "channelId=ch_X",
     "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"];
   assert.equal(await main(args, io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
-  assert.deepEqual(sent.variables.map((v: any) => v.key), ["channelId", "env", "org"]);
+  assert.deepEqual(sent.variables.map((v: any) => v.key), ["channelId"]);
   assert.equal(sent.connections.cohost.connection, "conn_c");
   assert.equal(sent.connections.flite.connection, "conn_f");
   for (const [id, ref] of [["order_placed", "flite"], ["order_upsert", "cohost"]]) {
@@ -291,20 +313,21 @@ test("install --apply binds companyId and connections on the order-root nodes; o
   assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "bogus=1"], bad.io), 1);
 });
 
-test("order expressions: transform reads the trigger order; upsert reads the transformed order", () => {
+test("order expressions: transform reads the trigger order + Flite connection; upsert sends the whole transformed body", () => {
   const wf = load();
+  const data = { order: { contextId: "urn:1:co1:conn_f:/events/e1" }, source: { system: "flite" }, attendees: [] };
   const ctx = {
-    vars: { env: "sandbox", org: "o", channelId: "ch1" },
+    vars: { channelId: "ch1" },
     steps: {
       order_placed: { output: { orderId: "o1", order: { _id: "o1" } }, meta: { connectionId: "conn_f" } },
-      order_transform: { output: { order: { contextId: "urn:1:co1:conn_f:/events/e1", total: 5 } } },
+      order_transform: { output: { data, urn: "u" } },
     },
   };
   const t = resolve(node(wf, "order_transform").with, ctx);
-  assert.deepEqual(t, { order: { _id: "o1" }, connectionId: "conn_f" });
+  assert.deepEqual(t, { order: { _id: "o1" }, connectionId: "conn_f", channelId: "ch1" });
   assert.equal(node(wf, "order_transform").with.order.$, "steps.order_placed.output.order");
-  assert.equal(node(wf, "order_upsert").with.data.order.$, "steps.order_transform.output.order");
-  assert.deepEqual(resolve(node(wf, "order_upsert").with, ctx).data, { order: ctx.steps.order_transform.output.order });
+  assert.deepEqual(node(wf, "order_upsert").with, { data: { $: "steps.order_transform.output.data" } });
+  assert.deepEqual(resolve(node(wf, "order_upsert").with, ctx).data, data);
 });
 
 test("idempotency: the order write is upsert-order (never a create action), retried", () => {
@@ -378,11 +401,12 @@ const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["body step shared by two loops", (wf) => { node(wf, "import_each_page").with.body = ["page_fetch", "ev_target"]; }, /import_each_page body must be exactly/],
   ["page loop iterates the wrong list", (wf) => { node(wf, "import_each_page").with.items = { $: "steps.import_pages.output.skipped" }; }, /import_each_page\.items must be bound/],
   ["upsert replaced by a create action", (wf) => { node(wf, "imp_upsert").uses.action = "create-order"; }, /import-root step imp_upsert must be vip\.cohost\.w6w\/upsert-order|unknown vip\.cohost\.w6w action/],
-  ["upsert data from the raw Flite order", (wf) => { node(wf, "imp_upsert").with.data.order = { $: "foreach.item.order" }; }, /imp_upsert\.data\.order/],
+  ["upsert data from the raw Flite order", (wf) => { node(wf, "imp_upsert").with.data = { order: { $: "foreach.item.order" } }; }, /imp_upsert\.data must be bound/],
   ["upsert retry < 3", (wf) => { node(wf, "imp_upsert").retry.maxAttempts = 1; }, /imp_upsert needs retry/],
   ["transform connectionId from vars", (wf) => { node(wf, "imp_transform").with.connectionId = { $: "vars.connectionId" }; }, /imp_transform\.connectionId must be bound to steps\.import_conn\.meta\.connectionId/],
   ["transform companyId via vars", (wf) => { node(wf, "imp_transform").with.companyId = { $: "vars.companyId" }; }, /vars\.companyId is forbidden|imp_transform: companyId must not be bound to vars\.companyId/],
-  ["transform eventId dropped", (wf) => { delete node(wf, "imp_transform").with.eventId; }, /imp_transform\.eventId must be bound/],
+  ["transform eventId brought back", (wf) => { node(wf, "imp_transform").with.eventId = { $: "foreach.item.eventId" }; }, /imp_transform must not pass eventId/],
+  ["transform channelId unbound", (wf) => { delete node(wf, "imp_transform").with.channelId; }, /imp_transform\.channelId must be bound/],
   ["list-orders eventId literal", (wf) => { node(wf, "page_fetch").with.eventId = "e1"; }, /page_fetch must read/],
   ["list-orders unretried", (wf) => { delete node(wf, "page_fetch").retry; }, /page_fetch needs retry/],
   ["max pages literal", (wf) => { node(wf, "import_pages").with.maxPages = 5; }, /maxPages must be the literal 10/],
@@ -390,13 +414,15 @@ const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["truncation guard input unbound", (wf) => { node(wf, "import_complete").with.input.truncated = []; }, /import_complete\.input\.truncated must be bound/],
   ["snapshot carries a listingId", (wf) => { node(wf, "ev_snapshot").with.listingId = "l1"; }, /ev_snapshot must not carry listingId/],
   ["snapshot labels lack channelId", (wf) => { delete node(wf, "ev_snapshot").with.mappingLabels.channelId; }, /ev_snapshot\.mappingLabels must be exactly/],
-  ["target expected lacks org", (wf) => { delete node(wf, "ev_target").with.input.expected.org; }, /ev_target\.input\.expected must be exactly/],
+  ["target expected gains env", (wf) => { node(wf, "ev_target").with.input.expected.env = "sandbox"; }, /ev_target\.input\.expected must be exactly/],
+  ["target not scoped to the Flite connection", (wf) => { delete node(wf, "ev_target").with.input.connectionId; }, /ev_target\.input\.connectionId must be bound/],
+  ["target companyId from the account const", (wf) => { node(wf, "ev_target").with.input.companyId = { $: "const.account_id" }; }, /ev_target\.input\.companyId must be bound to steps\.ev_snapshot\.output\.companyId/],
   ["target expected channelId literal", (wf) => { node(wf, "ev_target").with.input.expected.channelId = "ch1"; }, /ev_target\.input\.expected must be exactly/],
   ["target mappings unbound", (wf) => { node(wf, "ev_target").with.input.mappings = []; }, /ev_target\.input\.mappings must be bound/],
   ["target does not verify labels", (wf) => { node(wf, "ev_target").with.code = "return { mapped: true };"; }, /ev_target code must verify mapping labels/],
   ["list events not scoped to the channel", (wf) => { node(wf, "import_list_events").with.channelId = "ch1"; }, /import_list_events\.channelId must be bound/],
   ["import maxPages bound to a var", (wf) => { node(wf, "import_pages").with.maxPages = { $: "vars.importMaxPages" }; }, /maxPages must be the literal 10/],
-  ["import ev_snapshot companyId bound to a literal", (wf) => { node(wf, "ev_snapshot").with.companyId = "co1"; }, /ev_snapshot\.companyId must be bound to const\.account_id/],
+  ["import ev_snapshot companyId passed", (wf) => { node(wf, "ev_snapshot").with.companyId = "co1"; }, /ev_snapshot must not pass companyId/],
   ["import_event_ids binds eventId", (wf) => { node(wf, "import_event_ids").with.input.eventId = "e1"; }, /must not bind eventId/],
   ["embedded connection id", (wf) => { node(wf, "imp_upsert").uses.connection = "conn_1"; }, /embeds a connection id/],
   ["upsert connectionRef missing", (wf) => { delete node(wf, "imp_upsert").uses.connectionRef; }, /imp_upsert must use connectionRef cohost/],
@@ -415,18 +441,15 @@ for (const [name, mutate, re] of importMutations) {
   });
 }
 
-test("install --var: only the three variables are accepted; coerceVar still coerces typed values", async () => {
+test("install --var: only channelId is accepted; coerceVar still coerces typed values", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wf-"));
   const tf = join(dir, "tok");
   writeFileSync(tf, "t\n");
   const { o, io } = mkIo();
-  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "org=o1", "--var", "channelId=ch_X", "--apply"], io), 0);
+  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "channelId=ch_X", "--apply"], io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
-  const v = (k: string) => sent.variables.find((x: any) => x.key === k).default;
-  assert.strictEqual(v("env"), "sandbox");
-  assert.strictEqual(v("org"), "o1");
-  assert.strictEqual(v("channelId"), "ch_X");
-  for (const gone of ["companyId", "currency", "importEventId", "importMaxPages"]) {
+  assert.strictEqual(sent.variables.find((x: any) => x.key === "channelId").default, "ch_X");
+  for (const gone of ["env", "org", "eventId", "companyId", "currency", "importEventId", "importMaxPages"]) {
     const e = mkIo();
     assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", `${gone}=x`, "--apply"], e.io), 1);
     assert.match(e.o.err.join("\n"), new RegExp(`unknown --var ${gone}`));
@@ -443,7 +466,7 @@ test("install --apply binds the import root's cohost and flite connections; chan
   const tf = join(dir, "tok");
   writeFileSync(tf, "t\n");
   const { o, io } = mkIo();
-  const args = ["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "channelId=ch_X",
+  const args = ["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "channelId=ch_X",
     "--connection", "cohost=conn_c", "--connection", "flite=conn_f", "--apply"];
   assert.equal(await main(args, io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
@@ -458,7 +481,8 @@ test("install --apply binds the import root's cohost and flite connections; chan
   assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
   assert.equal(node(sent, "ev_target").with.input.expected.channelId.$, "vars.channelId", "ownership labels stay variable refs");
   assert.strictEqual(node(sent, "import_pages").with.maxPages, 10);
-  assert.deepEqual(node(sent, "ev_snapshot").with.companyId, { $: "const.account_id" });
+  assert.equal("companyId" in node(sent, "ev_snapshot").with, false, "companyId is the action's hidden const");
+  assert.deepEqual(node(sent, "ev_target").with.input.connectionId, { $: "steps.import_conn.meta.connectionId" });
   // the source file stays unbound
   assert.equal(load().connections.flite.connection, null);
   assert.equal(load().connections.cohost.connection, null);
