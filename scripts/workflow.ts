@@ -187,13 +187,163 @@ export const IMPORT_ROOT_IDS = [
   "import_each_page", "page_fetch", "import_flatten", "import_complete", "import_each_order", "imp_transform", "imp_upsert",
 ] as const;
 
+const IMPORT_SET: ReadonlySet<string> = new Set(IMPORT_ROOT_IDS);
+/** Expected app/action per import-root node. */
+const IMPORT_USES: Record<string, [string, string]> = {
+  import_start: ["@w6w/trigger", "manual"],
+  import_list_events: [APP_A, "list-channel-events"],
+  import_event_ids: ["@w6w/script", "run"],
+  import_each_event: ["@w6w/control", "foreach"],
+  ev_snapshot: [APP_A, "get-channel-event-snapshot"],
+  ev_target: ["@w6w/script", "run"],
+  import_pages: [APP_X, "order-import-pages"],
+  import_each_page: ["@w6w/control", "foreach"],
+  page_fetch: [APP_F, "list-orders"],
+  import_flatten: [APP_X, "order-import-flatten"],
+  import_complete: ["@w6w/script", "run"],
+  import_each_order: ["@w6w/control", "foreach"],
+  imp_transform: [APP_X, "transform-order"],
+  imp_upsert: [APP_A, "upsert-order"],
+};
+/** Sequential edges of the import root (foreach nodes have no edge to their body). */
+const IMPORT_EDGES: ReadonlyArray<[string, string]> = [
+  ["import_start", "import_list_events"], ["import_list_events", "import_event_ids"], ["import_event_ids", "import_each_event"],
+  ["import_each_event", "import_pages"], ["import_pages", "import_each_page"], ["import_each_page", "import_flatten"],
+  ["import_flatten", "import_complete"], ["import_complete", "import_each_order"],
+  ["ev_snapshot", "ev_target"], ["imp_transform", "imp_upsert"],
+];
+/** foreach node -> its body (in order) and the step whose output it iterates. */
+const IMPORT_LOOPS: Record<string, { body: string[]; items: string }> = {
+  import_each_event: { body: ["ev_snapshot", "ev_target"], items: "steps.import_event_ids.output.eventIds" },
+  import_each_page: { body: ["page_fetch"], items: "steps.import_pages.output.jobs" },
+  import_each_order: { body: ["imp_transform", "imp_upsert"], items: "steps.import_flatten.output.items" },
+};
+
 /**
- * Fourth root: detached "import all orders" flow. Returns validation errors.
- * STUB (T9 S1): checks nothing yet; the real checks (detachment from the other three roots, bindings,
- * foreach bodies, mapping-label guard, upsert only after the truncation guard) land in a later T9 slice.
+ * Fourth root: detached "import all orders" flow (manual start -> channel events -> per-event mapping
+ * with channel-ownership labels -> paged list-orders -> truncation guard -> per-order transform + upsert-order).
+ * Returns validation errors.
  */
-export function validateImportRoot(_wf: Json, _nodes: Json[], _edges: Json[]): string[] {
-  return [];
+export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): string[] {
+  const errs: string[] = [];
+  const n = (id: string) => nodes.find((x) => x.id === id);
+  const w = (id: string): Json => n(id)?.with ?? {};
+  const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
+  const j = (x: unknown) => JSON.stringify(x ?? null);
+  for (const id of IMPORT_ROOT_IDS) {
+    const node = n(id);
+    if (!node) { errs.push(`missing import-root step ${id}`); continue; }
+    const [app, action] = IMPORT_USES[id];
+    if (node.uses?.app !== app || node.uses?.action !== action || node.uses?.trigger === true) errs.push(`import-root step ${id} must be ${app}/${action}`);
+  }
+  if (IMPORT_ROOT_IDS.some((id) => !n(id))) return errs;
+  // detachment: no edge touches both the import root and any other node; its steps never read other roots' outputs, nor vice versa
+  for (const e of edges) {
+    if (IMPORT_SET.has(e.from) !== IMPORT_SET.has(e.to)) errs.push(`import root must be detached from the other roots (edge ${e.from} -> ${e.to})`);
+  }
+  for (const node of nodes) {
+    const refs = [...j(node.with).matchAll(/"steps\.([A-Za-z0-9_-]+)\./g)].map((m) => m[1]);
+    for (const r of refs) {
+      if (IMPORT_SET.has(node.id) !== IMPORT_SET.has(r)) errs.push(`node ${node.id} reads steps.${r} across the import root boundary`);
+    }
+  }
+  // exact edge set inside the import root
+  const inner = edges.filter((e) => IMPORT_SET.has(e.from) && IMPORT_SET.has(e.to));
+  for (const [a, b] of IMPORT_EDGES) if (!inner.some((e) => e.from === a && e.to === b)) errs.push(`missing edge ${a} -> ${b}`);
+  for (const e of inner) if (!IMPORT_EDGES.some(([a, b]) => a === e.from && b === e.to)) errs.push(`unexpected import-root edge ${e.from} -> ${e.to}`);
+  if (edges.some((e) => e.to === "import_start")) errs.push("import_start must have no inbound edge");
+  // foreach bodies: exact, contiguous (chained in order), owned by one loop, no edge leaking in or out
+  const owner = new Map<string, string>();
+  for (const [lid, spec] of Object.entries(IMPORT_LOOPS)) {
+    const body = w(lid).body;
+    if (!Array.isArray(body) || body.join() !== spec.body.join()) { errs.push(`${lid} body must be exactly [${spec.body.join(", ")}]`); continue; }
+    if (!bound(w(lid).items, spec.items)) errs.push(`${lid}.items must be bound to ${spec.items}`);
+    for (const b of body) {
+      if (owner.has(b)) errs.push(`${b} is in two foreach bodies`);
+      owner.set(b, lid);
+    }
+    for (const e of edges) {
+      const fi = body.includes(e.from), ti = body.includes(e.to);
+      if (fi !== ti) errs.push(`foreach ${lid} body edge leaks (${e.from} -> ${e.to})`);
+      if (fi && ti && body.indexOf(e.to) !== body.indexOf(e.from) + 1) errs.push(`foreach ${lid} body is not contiguous (${e.from} -> ${e.to})`);
+    }
+  }
+  // upsert only through the truncation guard: the loop owning imp_upsert has import_complete as its only inbound edge, and no path avoids the guard
+  const loop = owner.get("imp_upsert");
+  if (loop !== "import_each_order") errs.push("imp_upsert must be in the import_each_order foreach body");
+  for (const e of edges.filter((x) => x.to === "import_each_order")) {
+    if (e.from !== "import_complete") errs.push(`import_each_order must only be reachable through import_complete (edge ${e.from} -> ${e.to})`);
+  }
+  for (const e of edges.filter((x) => x.to === "imp_upsert")) {
+    if (e.from !== "imp_transform") errs.push(`imp_upsert must only follow imp_transform (edge ${e.from} -> ${e.to})`);
+  }
+  if (edges.some((e) => e.from === "imp_upsert")) errs.push("imp_upsert must have no outgoing edge");
+  const seen = new Set<string>(["import_start"]);
+  const stack = ["import_start"];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const e of edges.filter((x) => x.from === cur)) {
+      if (e.to === "import_complete" || seen.has(e.to)) continue;
+      seen.add(e.to);
+      stack.push(e.to);
+    }
+  }
+  for (const id of ["import_each_order", "imp_transform", "imp_upsert"]) if (seen.has(id)) errs.push(`${id} reachable without passing import_complete`);
+  // step params
+  const lc = w("import_list_events");
+  if (!bound(lc.channelId, "vars.channelId")) errs.push("import_list_events.channelId must be bound to vars.channelId");
+  const eid = w("import_event_ids").input ?? {};
+  for (const [k, ref] of [["eventId", "vars.importEventId"], ["results", "steps.import_list_events.output.results"], ["total", "steps.import_list_events.output.total"]] as const) {
+    if (!bound(eid[k], ref)) errs.push(`import_event_ids.input.${k} must be bound to ${ref}`);
+  }
+  const snap = w("ev_snapshot");
+  if (!bound(snap.eventId, "foreach.item")) errs.push("ev_snapshot.eventId must be bound to foreach.item");
+  if (!bound(snap.channelId, "vars.channelId")) errs.push("ev_snapshot.channelId must be bound to vars.channelId");
+  if (!bound(snap.companyId, "vars.companyId")) errs.push("ev_snapshot.companyId must be bound to vars.companyId");
+  if ("listingId" in snap) errs.push("ev_snapshot must not carry listingId (import is not listing-scoped)");
+  const labelsOk = (l: Json | undefined) => !!l && Object.keys(l).sort().join() === "channelId,env,org,provider" && l.provider === "flite" && bound(l.env, "vars.env") && bound(l.org, "vars.org") && bound(l.channelId, "vars.channelId");
+  if (!labelsOk(snap.mappingLabels)) errs.push("ev_snapshot.mappingLabels must be exactly {provider:flite, env, org, channelId} bound to vars");
+  const tgt = w("ev_target").input ?? {};
+  if (!bound(tgt.eventId, "foreach.item")) errs.push("ev_target.input.eventId must be bound to foreach.item");
+  if (!bound(tgt.mappings, "steps.ev_snapshot.output.mappings.event")) errs.push("ev_target.input.mappings must be bound to steps.ev_snapshot.output.mappings.event");
+  if (!bound(tgt.companyId, "vars.companyId")) errs.push("ev_target.input.companyId must be bound to vars.companyId");
+  if (!bound(tgt.env, "vars.env")) errs.push("ev_target.input.env must be bound to vars.env");
+  if (!labelsOk(tgt.expected)) errs.push("ev_target.input.expected must be exactly {provider:flite, env, org, channelId} bound to vars (channel ownership)");
+  const tcode = String(w("ev_target").code ?? "");
+  if (!/labels/.test(tcode) || !/mapped/.test(tcode)) errs.push("ev_target code must verify mapping labels and return mapped");
+  const pg = w("import_pages");
+  if (!bound(pg.targets, "steps.import_each_event.output.items")) errs.push("import_pages.targets must be bound to steps.import_each_event.output.items");
+  if (!bound(pg.maxPages, "vars.importMaxPages")) errs.push("import_pages.maxPages must be bound to vars.importMaxPages");
+  const pf = w("page_fetch");
+  if (!bound(pf.eventId, "foreach.item.eventId") || !bound(pf.page, "foreach.item.page")) errs.push("page_fetch must read eventId/page from foreach.item");
+  const fl = w("import_flatten");
+  for (const [k, ref] of [["jobs", "steps.import_pages.output.jobs"], ["pages", "steps.import_each_page.output.items"], ["skipped", "steps.import_pages.output.skipped"]] as const) {
+    if (!bound(fl[k], ref)) errs.push(`import_flatten.${k} must be bound to ${ref}`);
+  }
+  const ic = w("import_complete");
+  if (!bound(ic.input?.truncated, "steps.import_flatten.output.truncated")) errs.push("import_complete.input.truncated must be bound to steps.import_flatten.output.truncated");
+  const icode = String(ic.code ?? "");
+  if (!/throw\b/.test(icode) || !/truncated/.test(icode)) errs.push("import_complete code must throw when truncated is non-empty");
+  const xf = w("imp_transform");
+  for (const [k, ref] of [["order", "foreach.item.order"], ["eventId", "foreach.item.eventId"], ["companyId", "vars.companyId"], ["env", "vars.env"]] as const) {
+    if (!bound(xf[k], ref)) errs.push(`imp_transform.${k} must be bound to ${ref}`);
+  }
+  if (!bound(w("imp_upsert").data?.order, "steps.imp_transform.output.order")) errs.push("imp_upsert.data.order must be bound to steps.imp_transform.output.order");
+  for (const id of ["page_fetch", "imp_upsert"]) if (!(n(id)!.retry?.maxAttempts >= 3)) errs.push(`${id} needs retry.maxAttempts >= 3`);
+  for (const key of ["importEventId", "importMaxPages"]) {
+    if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === key)) errs.push(`variable ${key} is missing`);
+  }
+  // connections: declared refs, bound at install (connection null in the file; main() fills them)
+  const want: Array<[string, string]> = [["import_list_events", "cohost"], ["ev_snapshot", "cohost"], ["imp_upsert", "cohost"], ["page_fetch", "flite"]];
+  for (const [id, ref] of want) {
+    if (n(id)!.uses.connectionRef !== ref) errs.push(`node ${id} must use connectionRef ${ref}`);
+    else if (!wf.connections?.[ref]) errs.push(`node ${id}: connectionRef ${ref} is not declared in connections`);
+  }
+  for (const id of IMPORT_ROOT_IDS) {
+    const u = n(id)!.uses;
+    if (u.connectionRef !== undefined && !want.some(([x]) => x === id)) errs.push(`node ${id} must not use a connectionRef`);
+  }
+  return errs;
 }
 
 /** Writes the channel id literal into every channel trigger node's `with.channelId` (the engine stores trigger params unresolved). The Flite order trigger has no channelId param and is skipped. */
