@@ -204,21 +204,21 @@ test("snapshot expressions resolve channelId/eventId/companyId for both actions"
   }
 });
 
-// ---- third root: Flite order-placed -> transform -> mapped-event guard -> upsert-order ----
+// ---- third root: Flite order-placed -> transform -> upsert-order (the Cohost order API resolves URNs) ----
 
-const ORDER_CHAIN = ["order_placed", "order_transform", "order_mapping", "order_guard", "order_upsert"];
+const ORDER_CHAIN = ["order_placed", "order_transform", "order_upsert"];
 
-test("order root: wired order_placed -> transform -> mapping -> guard -> upsert; existing roots untouched", async () => {
+test("order root: wired order_placed -> transform -> upsert (no URN pre-resolve); existing roots untouched", async () => {
   const wf = load();
   assert.deepEqual(await validateWorkflow(wf), []);
   for (let i = 0; i < ORDER_CHAIN.length - 1; i++) {
     assert.deepEqual(wf.edges.filter((e: any) => e.from === ORDER_CHAIN[i]), [{ from: ORDER_CHAIN[i], to: ORDER_CHAIN[i + 1] }]);
   }
-  assert.deepEqual(wf.edges.filter((e: any) => e.to === "order_upsert"), [{ from: "order_guard", to: "order_upsert" }]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "order_upsert"), [{ from: "order_transform", to: "order_upsert" }]);
+  assert.ok(!wf.nodes.some((n: any) => ["order_mapping", "order_guard"].includes(n.id) || n.uses?.action === "resolve-urn"));
   assert.equal(wf.edges.filter((e: any) => e.from === "order_upsert").length, 0);
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "snapshot").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.equal(node(wf, "order_placed").uses.connectionRef, "flite");
-  assert.equal(node(wf, "order_mapping").uses.connectionRef, "cohost");
   assert.equal(node(wf, "order_upsert").uses.connectionRef, "cohost");
   assert.deepEqual(wf.variables.map((v: any) => v.key), ["channelId", "env", "org"]);
   assert.ok(wf.variables.every((v: any) => v.required === true));
@@ -233,15 +233,19 @@ const orderMutations: Array<[string, (wf: any) => void, RegExp]> = [
     wf.edges = wf.edges.filter((e: any) => !ORDER_CHAIN.includes(e.from) && !ORDER_CHAIN.includes(e.to));
   }, /order-placed trigger node/],
   ["order trigger wrong action", (wf) => { node(wf, "order_placed").uses.action = "order-refunded"; }, /order-placed trigger node|not in flite index|unknown/],
-  ["guard edge removed", (wf) => {
-    wf.edges = wf.edges.filter((e: any) => !(e.from === "order_mapping" && e.to === "order_guard") && !(e.from === "order_guard" && e.to === "order_upsert"));
-    wf.edges.push({ from: "order_mapping", to: "order_upsert" });
-  }, /missing edge order_mapping -> order_guard|only be reachable through the guard|without passing the order guard/],
-  ["bypass edge transform -> upsert", (wf) => { wf.edges.push({ from: "order_transform", to: "order_upsert" }); }, /only be reachable through the guard|without passing the order guard/],
-  ["bypass edge trigger -> upsert", (wf) => { wf.edges.push({ from: "order_placed", to: "order_upsert" }); }, /only be reachable through the guard|without passing the order guard/],
+  ["bypass edge transform -> upsert duplicated trigger", (wf) => { wf.edges.push({ from: "order_placed", to: "order_upsert" }); }, /order trigger must only feed transform-order|upsert-order must only be fed by transform-order/],
+  ["resolve-urn step inserted on the order path", (wf) => {
+    wf.nodes.push({ id: "order_mapping", uses: { app: "vip.cohost.w6w", action: "resolve-urn", connectionRef: "cohost" }, with: { urn: { $: "steps.order_transform.output.order.contextId" } } });
+    wf.edges = wf.edges.filter((e: any) => !(e.from === "order_transform" && e.to === "order_upsert"));
+    wf.edges.push({ from: "order_transform", to: "order_mapping" }, { from: "order_mapping", to: "order_upsert" });
+  }, /resolve-urn is not allowed/],
+  ["guard script inserted on the order path", (wf) => {
+    wf.nodes.push({ id: "order_guard", uses: { app: "@w6w/script", action: "run" }, with: { code: "return 1;", input: {} } });
+    wf.edges = wf.edges.filter((e: any) => !(e.from === "order_transform" && e.to === "order_upsert"));
+    wf.edges.push({ from: "order_transform", to: "order_guard" }, { from: "order_guard", to: "order_upsert" });
+  }, /must not be on the order path|must only feed upsert-order|must only be fed by transform-order/],
   ["upsert connectionRef missing", (wf) => { delete node(wf, "order_upsert").uses.connectionRef; }, /order_upsert must use connectionRef cohost/],
   ["order trigger connectionRef missing", (wf) => { delete node(wf, "order_placed").uses.connectionRef; }, /order_placed must use connectionRef flite/],
-  ["mapping connectionRef missing", (wf) => { delete node(wf, "order_mapping").uses.connectionRef; }, /order_mapping must use connectionRef cohost/],
   ["flite connection undeclared", (wf) => { delete wf.connections.flite; }, /connectionRef flite is not declared/],
   ["upsert replaced by a non-upsert action", (wf) => { node(wf, "order_upsert").uses.action = "create-order"; }, /unknown vip\.cohost\.w6w action|missing order-root step upsert-order/],
   ["companyId variable rejected", (wf) => { wf.variables.push({ key: "companyId", type: "string", required: true }); }, /variables must be exactly channelId, env, org/],
@@ -253,18 +257,6 @@ const orderMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["transform connectionId bound to vars", (wf) => { node(wf, "order_transform").with.connectionId = { $: "vars.connectionId" }; }, /connectionId must not be bound to vars\.connectionId/],
   ["transform connectionId not from the order trigger meta", (wf) => { node(wf, "order_transform").with.connectionId = "c1"; }, /transform-order\.connectionId must be bound to steps\.order_placed\.meta\.connectionId/],
   ["desired transformer given companyId via vars", (wf) => { node(wf, "desired").with.companyId = { $: "vars.companyId" }; }, /transformer node desired: companyId must not be bound to vars\.companyId/],
-  ["mapping urn from wrong place", (wf) => { node(wf, "order_mapping").with.urn = { $: "steps.order_placed.output.orderId" }; }, /resolve-urn\.urn/],
-  ["mapping narrowed by a labels filter", (wf) => { node(wf, "order_mapping").with.labels = { provider: "flite" }; }, /resolve-urn must take only urn \(found labels\)/],
-  ["mapping narrowed by a type filter", (wf) => { node(wf, "order_mapping").with.type = "system-resource"; }, /resolve-urn must take only urn \(found type\)/],
-  ["mapping back to find-mapped-resources", (wf) => { node(wf, "order_mapping").uses.action = "find-mapped-resources"; }, /unknown vip\.cohost\.w6w action|missing order-root step resolve-urn/],
-  ["guard expected missing", (wf) => { delete node(wf, "order_guard").with.input.expected; }, /input\.expected must be exactly/],
-  ["guard expected lacks channelId", (wf) => { delete node(wf, "order_guard").with.input.expected.channelId; }, /input\.expected must be exactly/],
-  ["guard expected lacks env", (wf) => { delete node(wf, "order_guard").with.input.expected.env; }, /input\.expected must be exactly/],
-  ["guard expected org literal", (wf) => { node(wf, "order_guard").with.input.expected.org = "o"; }, /expected\.org must be bound to vars\.org/],
-  ["guard expected provider wrong", (wf) => { node(wf, "order_guard").with.input.expected.provider = "other"; }, /input\.expected must be exactly/],
-  ["guard mapping unbound", (wf) => { node(wf, "order_guard").with.input.mapping = { $: "steps.order_transform.output" }; }, /input\.mapping must be bound/],
-  ["guard does not throw", (wf) => { node(wf, "order_guard").with.code = "return { ok: true };"; }, /order guard code must throw/],
-  ["guard input wrong", (wf) => { node(wf, "order_guard").with.input = { $: "steps.order_transform.output" }; }, /order guard input/],
   ["upsert data from raw order", (wf) => { node(wf, "order_upsert").with.data.order = { $: "steps.order_placed.output.order" }; }, /upsert-order\.data\.order/],
   ["upsert retry < 3", (wf) => { node(wf, "order_upsert").retry.maxAttempts = 1; }, /upsert-order step needs retry/],
 ];
@@ -289,69 +281,17 @@ test("install --apply binds companyId and connections on the order-root nodes; o
   assert.deepEqual(sent.variables.map((v: any) => v.key), ["channelId", "env", "org"]);
   assert.equal(sent.connections.cohost.connection, "conn_c");
   assert.equal(sent.connections.flite.connection, "conn_f");
-  for (const [id, ref] of [["order_placed", "flite"], ["order_mapping", "cohost"], ["order_upsert", "cohost"]]) {
+  for (const [id, ref] of [["order_placed", "flite"], ["order_upsert", "cohost"]]) {
     assert.equal(node(sent, id).uses.connectionRef, ref);
     assert.ok(sent.connections[ref].connection, `${id} -> ${ref} bound`);
   }
   assert.equal(node(sent, "channel_changed").with.channelId, "ch_X");
   assert.equal(node(sent, "order_placed").with, undefined, "order trigger gets no channelId");
-  assert.equal(node(sent, "order_guard").with.input.expected.channelId.$, "vars.channelId", "guard expected labels stay variable refs");
   const bad = mkIo();
   assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "bogus=1"], bad.io), 1);
 });
 
-// Executes the shipped guard code the way the script action does: the code body is a function body with `input` in scope.
-const runGuard = (input: unknown) => new Function("input", String(node(load(), "order_guard").with.code))(input);
-
-const EXPECTED = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1" };
-const COMPANY = "co1";
-/** The mapping doc exactly as register-urn-mapping / sync registers an event: labels carry provider/env/org/channelId/listingId/kind/id/eventId; resources = [{...labels, urn: mappedUrn}, {urn: cohost event}]. */
-function mappingDoc(over: Record<string, unknown> = {}) {
-  const mappedUrn = `urn:1:${COMPANY}:conn_f:/events/9`;
-  const labels = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1", listingId: "l1", kind: "event", id: "9", eventId: "9", ...over };
-  return { urn: mappedUrn, labels, resources: [{ ...labels, urn: mappedUrn }, { urn: `urn:1:${COMPANY}:cohost-falcon:/events/evt_1` }] };
-}
-
-test("guard: a mapping registered by this channel passes", () => {
-  assert.deepEqual(runGuard({ mapping: mappingDoc(), expected: EXPECTED }), { ok: true });
-});
-
-test("guard: unmapped / foreign mappings throw 'unmapped Flite event'", () => {
-  const cases: Array<[string, unknown]> = [
-    ["undefined mapping", undefined],
-    ["null mapping", null],
-    ["empty resources", { ...mappingDoc(), resources: [] }],
-    ["resources not an array", { ...mappingDoc(), resources: { 0: { urn: "x" } } }],
-    ["no resources key", { urn: "u", labels: mappingDoc().labels }],
-    ["missing labels", { urn: "u", resources: mappingDoc().resources }],
-    ["empty labels", { ...mappingDoc(), labels: {} }],
-    ["different channelId", mappingDoc({ channelId: "ch2" })],
-    ["different env", mappingDoc({ env: "production" })],
-    ["different org", mappingDoc({ org: "o2" })],
-    ["different provider", mappingDoc({ provider: "eventbrite" })],
-    ["label removed (channelId)", mappingDoc({ channelId: undefined })],
-  ];
-  for (const [name, mapping] of cases) {
-    assert.throws(() => runGuard({ mapping, expected: EXPECTED }), /unmapped Flite event/, name);
-  }
-  assert.throws(() => runGuard(undefined), /unmapped Flite event/, "no input at all");
-  assert.throws(() => runGuard({ mapping: mappingDoc() }), /unmapped Flite event/, "no expected labels supplied fails closed");
-  assert.throws(() => runGuard({ mapping: mappingDoc(), expected: { ...EXPECTED, channelId: undefined } }), /unmapped Flite event/, "unset expected var fails closed");
-});
-
-test("order root uses resolve-urn (no labels/type filter), not find-mapped-resources", () => {
-  const wf = load();
-  const order = wf.nodes.filter((n: any) => ORDER_CHAIN.includes(n.id));
-  assert.ok(!order.some((n: any) => n.uses.action === "find-mapped-resources"));
-  assert.ok(!JSON.stringify(order).includes("find-mapped-resources"));
-  const m = node(wf, "order_mapping");
-  assert.deepEqual([m.uses.app, m.uses.action, m.uses.connectionRef], ["vip.cohost.w6w", "resolve-urn", "cohost"]);
-  assert.deepEqual(Object.keys(m.with), ["urn"], "no labels filter and no type param");
-  assert.deepEqual(m.with.urn, { $: "steps.order_transform.output.order.contextId" });
-  assert.deepEqual(node(wf, "order_guard").with.input.mapping, { $: "steps.order_mapping.output" });
-});
-
-test("order expressions: transform reads the trigger order; upsert reads the transformed order; mapping reads the transformed contextId", () => {
+test("order expressions: transform reads the trigger order; upsert reads the transformed order", () => {
   const wf = load();
   const ctx = {
     vars: { env: "sandbox", org: "o", channelId: "ch1" },
@@ -363,11 +303,6 @@ test("order expressions: transform reads the trigger order; upsert reads the tra
   const t = resolve(node(wf, "order_transform").with, ctx);
   assert.deepEqual(t, { order: { _id: "o1" }, connectionId: "conn_f" });
   assert.equal(node(wf, "order_transform").with.order.$, "steps.order_placed.output.order");
-  const m = resolve(node(wf, "order_mapping").with, ctx);
-  assert.deepEqual(m, { urn: "urn:1:co1:conn_f:/events/e1" });
-  const doc = mappingDoc();
-  const g = resolve(node(wf, "order_guard").with, { ...ctx, steps: { ...ctx.steps, order_mapping: { output: doc } } });
-  assert.deepEqual(g.input, { mapping: doc, expected: { provider: "flite", env: "sandbox", org: "o", channelId: "ch1" } });
   assert.equal(node(wf, "order_upsert").with.data.order.$, "steps.order_transform.output.order");
   assert.deepEqual(resolve(node(wf, "order_upsert").with, ctx).data, { order: ctx.steps.order_transform.output.order });
 });
@@ -422,8 +357,8 @@ const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
     wf.edges = wf.edges.filter((e: any) => !IMPORT_IDS.includes(e.from) && !IMPORT_IDS.includes(e.to));
   }, /missing import-root step import_start/],
   ["import start connected to the snapshot", (wf) => { wf.edges.push({ from: "import_start", to: "snapshot" }); }, /import root must be detached.*import_start -> snapshot/],
-  ["order root connected into the import root", (wf) => { wf.edges.push({ from: "order_guard", to: "import_list_events" }); }, /import root must be detached.*order_guard -> import_list_events/],
-  ["import root feeding the order guard", (wf) => { wf.edges.push({ from: "import_complete", to: "order_guard" }); }, /import root must be detached.*import_complete -> order_guard/],
+  ["order root connected into the import root", (wf) => { wf.edges.push({ from: "order_upsert", to: "import_list_events" }); }, /import root must be detached.*order_upsert -> import_list_events/],
+  ["import root feeding the order upsert", (wf) => { wf.edges.push({ from: "import_complete", to: "order_upsert" }); }, /import root must be detached.*import_complete -> order_upsert/],
   ["trigger feeding import start", (wf) => { wf.edges.push({ from: "channel_changed", to: "import_start" }); }, /import root must be detached|import_start must have no inbound edge/],
   ["import step reads another root's output", (wf) => { node(wf, "imp_transform").with.extra = { $: "steps.order_transform.output" }; }, /across the import root boundary/],
   ["other root reads an import step", (wf) => { node(wf, "report").with.input.extra = { $: "steps.import_flatten.output" }; }, /across the import root boundary/],

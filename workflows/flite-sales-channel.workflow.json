@@ -80,29 +80,6 @@
       }
     },
     {
-      "id": "order_mapping",
-      "uses": { "app": "vip.cohost.w6w", "action": "resolve-urn", "connectionRef": "cohost" },
-      "with": {
-        "urn": { "$": "steps.order_transform.output.order.contextId" }
-      }
-    },
-    {
-      "id": "order_guard",
-      "uses": { "app": "@w6w/script", "action": "run" },
-      "with": {
-        "code": "var m = input && input.mapping; var exp = (input && input.expected) || {}; var keys = Object.keys(exp); if (keys.length === 0) { throw new Error('unmapped Flite event: no expected channel labels supplied; order not imported'); } if (!m || typeof m !== 'object' || !Array.isArray(m.resources) || m.resources.length === 0) { throw new Error('unmapped Flite event: no URN mapping for the order event; order not imported'); } var labels = m.labels || {}; for (var i = 0; i < keys.length; i++) { var k = keys[i]; if (typeof exp[k] !== 'string' || exp[k] === '' || labels[k] !== exp[k]) { throw new Error('unmapped Flite event: mapping is not owned by this channel (label ' + k + ' is ' + JSON.stringify(labels[k]) + ', expected ' + JSON.stringify(exp[k]) + '); order not imported'); } } return { ok: true };",
-        "input": {
-          "mapping": { "$": "steps.order_mapping.output" },
-          "expected": {
-            "provider": "flite",
-            "env": { "$": "vars.env" },
-            "org": { "$": "vars.org" },
-            "channelId": { "$": "vars.channelId" }
-          }
-        }
-      }
-    },
-    {
       "id": "order_upsert",
       "uses": { "app": "vip.cohost.w6w", "action": "upsert-order", "connectionRef": "cohost" },
       "with": { "data": { "order": { "$": "steps.order_transform.output.order" } } },
@@ -234,9 +211,7 @@
     { "from": "sync", "to": "register" },
     { "from": "register", "to": "report" },
     { "from": "order_placed", "to": "order_transform" },
-    { "from": "order_transform", "to": "order_mapping" },
-    { "from": "order_mapping", "to": "order_guard" },
-    { "from": "order_guard", "to": "order_upsert" },
+    { "from": "order_transform", "to": "order_upsert" },
     { "from": "import_start", "to": "import_conn" },
     { "from": "import_conn", "to": "import_list_events" },
     { "from": "import_list_events", "to": "import_event_ids" },

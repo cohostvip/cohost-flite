@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 type Json = Record<string, any>;
 
 /** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
-export const A_KEYS = ["get-channel-event-snapshot", "list-channel-events", "register-urn-mappings", "resolve-urn", "upsert-order"] as const;
+export const A_KEYS = ["get-channel-event-snapshot", "list-channel-events", "register-urn-mappings", "upsert-order"] as const;
 export const A_TRIGGERS = ["channel-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
@@ -143,54 +143,46 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   return errs;
 }
 
-/** Third root: Flite order-placed -> transform-order -> mapped-event lookup -> guard -> upsert-order. */
+/** Third root: Flite order-placed -> transform-order -> upsert-order. The Cohost order API resolves the order's URNs itself (no pre-resolve step). */
 function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | undefined, byAction: (app: string, action: string) => Json | undefined, errs: string[]): void {
   const xform = byAction(APP_X, "transform-order");
-  const mapping = byAction(APP_A, "resolve-urn");
   const upsert = byAction(APP_A, "upsert-order");
-  const guard = nodes.find((n) => n.id === "order_guard" && n.uses?.app === "@w6w/script");
-  for (const [name, n] of [["order trigger", trig], ["transform-order", xform], ["resolve-urn", mapping], ["order_guard script", guard], ["upsert-order", upsert]] as const) {
+  for (const [name, n] of [["order trigger", trig], ["transform-order", xform], ["upsert-order", upsert]] as const) {
     if (!n) errs.push(`missing order-root step ${name}`);
   }
-  if (!trig || !xform || !mapping || !guard || !upsert) return;
-  const chain = [trig, xform, mapping, guard, upsert];
+  if (!trig || !xform || !upsert) return;
+  const chain = [trig, xform, upsert];
   for (let i = 0; i < chain.length - 1; i++) {
     if (!edges.some((e) => e.from === chain[i].id && e.to === chain[i + 1].id)) errs.push(`missing edge ${chain[i].id} -> ${chain[i + 1].id}`);
   }
-  // upsert-order is reachable only through the guard: every inbound edge is guard -> upsert, and no path from any other node avoids the guard
-  for (const e of edges.filter((x) => x.to === upsert.id)) {
-    if (e.from !== guard.id) errs.push(`upsert-order must only be reachable through the guard (edge ${e.from} -> ${e.to})`);
-  }
-  const seen = new Set<string>([trig.id]);
+  // the order path is exactly trigger -> transform -> upsert: nothing may sit between them (no URN pre-resolve, no guard)
+  for (const e of edges.filter((x) => x.from === trig.id)) if (e.to !== xform.id) errs.push(`order trigger must only feed transform-order (edge ${e.from} -> ${e.to})`);
+  for (const e of edges.filter((x) => x.from === xform.id)) if (e.to !== upsert.id) errs.push(`transform-order must only feed upsert-order (edge ${e.from} -> ${e.to})`);
+  for (const e of edges.filter((x) => x.to === upsert.id)) if (e.from !== xform.id) errs.push(`upsert-order must only be fed by transform-order (edge ${e.from} -> ${e.to})`);
+  // the Cohost order API resolves URNs: reject any resolve-urn step on the order path
+  const onPath = new Set<string>([trig.id]);
   const stack = [trig.id];
   while (stack.length) {
     const cur = stack.pop()!;
     for (const e of edges.filter((x) => x.from === cur)) {
-      if (e.to === guard.id || seen.has(e.to)) continue;
-      seen.add(e.to);
+      if (onPath.has(e.to)) continue;
+      onPath.add(e.to);
       stack.push(e.to);
     }
   }
-  if (seen.has(upsert.id)) errs.push("upsert-order reachable without passing the order guard");
+  for (const n of nodes) {
+    if (n.uses?.action === "resolve-urn") errs.push(`node ${n.id}: resolve-urn is not allowed (the order API resolves URNs)`);
+    else if (onPath.has(n.id) && ![trig.id, xform.id, upsert.id].includes(n.id)) errs.push(`node ${n.id} must not be on the order path (only order trigger, transform-order, upsert-order)`);
+  }
   const w = (n: Json) => n.with ?? {};
   const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
   if (!bound(w(xform).order, `steps.${trig.id}.output.order`)) errs.push(`transform-order.order must be bound to steps.${trig.id}.output.order`);
   if (!bound(w(xform).connectionId, `steps.${trig.id}.meta.connectionId`)) errs.push(`transform-order.connectionId must be bound to steps.${trig.id}.meta.connectionId`);
-  if (!bound(w(mapping).urn, `steps.${xform.id}.output.order.contextId`)) errs.push(`resolve-urn.urn must be bound to steps.${xform.id}.output.order.contextId`);
-  // resolve-urn returns the URN's own mapping doc; it must not be narrowed by a labels/type filter (the guard verifies ownership instead)
-  for (const k of Object.keys(w(mapping))) if (k !== "urn") errs.push(`resolve-urn must take only urn (found ${k}); ownership is verified by the guard`);
-  const gi = w(guard).input ?? {};
-  if (!bound(gi.mapping, `steps.${mapping.id}.output`)) errs.push(`order guard input.mapping must be bound to steps.${mapping.id}.output`);
-  const ex = gi.expected ?? {};
-  if (Object.keys(ex).sort().join() !== "channelId,env,org,provider" || ex.provider !== "flite") errs.push("order guard input.expected must be exactly {provider:flite, env, org, channelId}");
-  for (const k of ["env", "org", "channelId"]) if (!bound(ex[k], `vars.${k}`)) errs.push(`order guard input.expected.${k} must be bound to vars.${k}`);
-  const gcode = String(w(guard).code ?? "");
-  if (!/throw\b/.test(gcode) || !/Array\.isArray/.test(gcode) || !/resources/.test(gcode) || !/labels/.test(gcode)) errs.push("order guard code must throw unless mapping.resources is a non-empty array and mapping.labels match expected");
   if (!bound(w(upsert).data?.order, `steps.${xform.id}.output.order`)) errs.push(`upsert-order.data.order must be bound to steps.${xform.id}.output.order`);
   if (!(upsert.retry?.maxAttempts >= 3)) errs.push("upsert-order step needs retry.maxAttempts >= 3");
   if (edges.some((e) => e.from === upsert.id)) errs.push("upsert-order must have no outgoing edge");
   // connection refs bound on every order-root node that talks to an app account
-  const want: Array<[Json, string]> = [[trig, "flite"], [mapping, "cohost"], [upsert, "cohost"]];
+  const want: Array<[Json, string]> = [[trig, "flite"], [upsert, "cohost"]];
   for (const [n, ref] of want) {
     if (n.uses.connectionRef !== ref) errs.push(`node ${n.id} must use connectionRef ${ref}`);
     else if (!wf.connections?.[ref]) errs.push(`node ${n.id}: connectionRef ${ref} is not declared in connections`);
