@@ -26,6 +26,14 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   if (wf.manifestVersion !== "2") errs.push('manifestVersion must be "2"');
   const nodes: Json[] = Array.isArray(wf.nodes) ? wf.nodes : [];
   const edges: Json[] = Array.isArray(wf.edges) ? wf.edges : [];
+  // exactly three variables a person chooses; companyId is never a variable (always const.account_id)
+  const varKeys = (Array.isArray(wf.variables) ? wf.variables : []).map((v: Json) => String(v.key)).sort().join();
+  if (varKeys !== "channelId,env,org") errs.push(`variables must be exactly channelId, env, org (found ${varKeys || "none"}); companyId is never a variable`);
+  if (/vars\.companyId/.test(JSON.stringify(nodes))) errs.push("vars.companyId is forbidden: companyId must come from const.account_id");
+  for (const k of ["channelId", "env", "org"]) {
+    const d = (Array.isArray(wf.variables) ? wf.variables : []).find((v: Json) => v.key === k);
+    if (d && d.required !== true) errs.push(`variable ${k} must be required`);
+  }
   const ids = new Set(nodes.map((n) => n.id));
   if (ids.size !== nodes.length) errs.push("duplicate node ids");
   for (const e of edges) {
@@ -166,7 +174,6 @@ function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | 
   const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
   if (!bound(w(xform).order, `steps.${trig.id}.output.order`)) errs.push(`transform-order.order must be bound to steps.${trig.id}.output.order`);
   if (!bound(w(xform).connectionId, `steps.${trig.id}.meta.connectionId`)) errs.push(`transform-order.connectionId must be bound to steps.${trig.id}.meta.connectionId`);
-  if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === "companyId" && v.required === true)) errs.push("variable companyId (required) is missing");
   if (!bound(w(mapping).urn, `steps.${xform.id}.output.order.contextId`)) errs.push(`resolve-urn.urn must be bound to steps.${xform.id}.output.order.contextId`);
   // resolve-urn returns the URN's own mapping doc; it must not be narrowed by a labels/type filter (the guard verifies ownership instead)
   for (const k of Object.keys(w(mapping))) if (k !== "urn") errs.push(`resolve-urn must take only urn (found ${k}); ownership is verified by the guard`);
@@ -301,26 +308,27 @@ export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): stri
   const lc = w("import_list_events");
   if (!bound(lc.channelId, "vars.channelId")) errs.push("import_list_events.channelId must be bound to vars.channelId");
   const eid = w("import_event_ids").input ?? {};
-  for (const [k, ref] of [["eventId", "vars.importEventId"], ["results", "steps.import_list_events.output.results"], ["total", "steps.import_list_events.output.total"]] as const) {
+  for (const [k, ref] of [["results", "steps.import_list_events.output.results"], ["total", "steps.import_list_events.output.total"]] as const) {
     if (!bound(eid[k], ref)) errs.push(`import_event_ids.input.${k} must be bound to ${ref}`);
   }
   const snap = w("ev_snapshot");
   if (!bound(snap.eventId, "foreach.item")) errs.push("ev_snapshot.eventId must be bound to foreach.item");
   if (!bound(snap.channelId, "vars.channelId")) errs.push("ev_snapshot.channelId must be bound to vars.channelId");
-  if (!bound(snap.companyId, "vars.companyId")) errs.push("ev_snapshot.companyId must be bound to vars.companyId");
+  if (!bound(snap.companyId, "const.account_id")) errs.push("ev_snapshot.companyId must be bound to const.account_id");
   if ("listingId" in snap) errs.push("ev_snapshot must not carry listingId (import is not listing-scoped)");
   const labelsOk = (l: Json | undefined) => !!l && Object.keys(l).sort().join() === "channelId,env,org,provider" && l.provider === "flite" && bound(l.env, "vars.env") && bound(l.org, "vars.org") && bound(l.channelId, "vars.channelId");
   if (!labelsOk(snap.mappingLabels)) errs.push("ev_snapshot.mappingLabels must be exactly {provider:flite, env, org, channelId} bound to vars");
   const tgt = w("ev_target").input ?? {};
   if (!bound(tgt.eventId, "foreach.item")) errs.push("ev_target.input.eventId must be bound to foreach.item");
   if (!bound(tgt.mappings, "steps.ev_snapshot.output.mappings.event")) errs.push("ev_target.input.mappings must be bound to steps.ev_snapshot.output.mappings.event");
-  if (!bound(tgt.companyId, "vars.companyId")) errs.push("ev_target.input.companyId must be bound to vars.companyId");
+  if (!bound(tgt.companyId, "const.account_id")) errs.push("ev_target.input.companyId must be bound to const.account_id");
   if (!labelsOk(tgt.expected)) errs.push("ev_target.input.expected must be exactly {provider:flite, env, org, channelId} bound to vars (channel ownership)");
   const tcode = String(w("ev_target").code ?? "");
   if (!/labels/.test(tcode) || !/mapped/.test(tcode)) errs.push("ev_target code must verify mapping labels and return mapped");
   const pg = w("import_pages");
   if (!bound(pg.targets, "steps.import_each_event.output.items")) errs.push("import_pages.targets must be bound to steps.import_each_event.output.items");
-  if (!bound(pg.maxPages, "vars.importMaxPages")) errs.push("import_pages.maxPages must be bound to vars.importMaxPages");
+  if (pg.maxPages !== 10) errs.push("import_pages.maxPages must be the literal 10");
+  if ("eventId" in (w("import_event_ids").input ?? {})) errs.push("import_event_ids.input must not bind eventId (import all channel events)");
   const pf = w("page_fetch");
   if (!bound(pf.eventId, "foreach.item.eventId") || !bound(pf.page, "foreach.item.page")) errs.push("page_fetch must read eventId/page from foreach.item");
   const fl = w("import_flatten");
@@ -337,9 +345,6 @@ export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): stri
   }
   if (!bound(w("imp_upsert").data?.order, "steps.imp_transform.output.order")) errs.push("imp_upsert.data.order must be bound to steps.imp_transform.output.order");
   for (const id of ["page_fetch", "imp_upsert"]) if (!(n(id)!.retry?.maxAttempts >= 3)) errs.push(`${id} needs retry.maxAttempts >= 3`);
-  for (const key of ["importEventId", "importMaxPages"]) {
-    if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === key)) errs.push(`variable ${key} is missing`);
-  }
   // connections: declared refs, bound at install (connection null in the file; main() fills them)
   const want: Array<[string, string]> = [["import_list_events", "cohost"], ["ev_snapshot", "cohost"], ["imp_upsert", "cohost"], ["import_conn", "flite"], ["page_fetch", "flite"]];
   for (const [id, ref] of want) {

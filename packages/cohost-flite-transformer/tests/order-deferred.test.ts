@@ -58,9 +58,9 @@ test("transform-order requires connectionId and uses it as the URN source segmen
 });
 
 test("sourceParams: companyId is hidden and defaults to const.account_id", () => {
-  const p = sourceParams.find((x) => x.key === "companyId") as Record<string, unknown>;
+  const p = sourceParams.find((x) => x.key === "companyId") as unknown as Record<string, unknown>;
   assert.equal(p.hidden, true);
   assert.equal(p.required, true);
   assert.equal(p.default, "{{ const.account_id }}");
-  assert.ok(transformOrder.params.some((x) => x.key === "companyId" && (x as Record<string, unknown>).hidden === true));
+  assert.ok(transformOrder.params.some((x) => x.key === "companyId" && (x as unknown as Record<string, unknown>).hidden === true));
 });

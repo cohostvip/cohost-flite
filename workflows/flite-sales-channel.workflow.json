@@ -7,12 +7,8 @@
   "trigger": { "type": "manual" },
   "variables": [
     { "key": "channelId", "type": "string", "required": true },
-    { "key": "companyId", "type": "string", "required": true },
     { "key": "env", "type": "string", "required": true },
-    { "key": "org", "type": "string", "required": true },
-    { "key": "currency", "type": "string", "default": "USD" },
-    { "key": "importEventId", "type": "string", "default": "" },
-    { "key": "importMaxPages", "type": "number", "default": 10 }
+    { "key": "org", "type": "string", "required": true }
   ],
   "connections": {
     "cohost": { "app": "vip.cohost.w6w", "connection": null },
@@ -50,8 +46,7 @@
       "with": {
         "snapshot": { "$": "steps.snapshot.output" },
         "env": { "$": "vars.env" },
-        "org": { "$": "vars.org" },
-        "currency": { "$": "vars.currency" }
+        "org": { "$": "vars.org" }
       }
     },
     {
@@ -139,7 +134,7 @@
       "uses": {"app": "@w6w/script", "action": "run"},
       "with": {
         "code": "var ev = input && input.eventId; if (typeof ev === 'string' && ev !== '') { return { eventIds: [ev] }; } var res = (input && input.results) || []; var total = input && input.total; if (typeof total === 'number' && total > res.length) { throw new Error('channel lists ' + total + ' events but only ' + res.length + ' were returned; import not started'); } return { eventIds: res.map(function (r) { return r.id; }) };",
-        "input": {"eventId": {"$": "vars.importEventId"}, "results": {"$": "steps.import_list_events.output.results"}, "total": {"$": "steps.import_list_events.output.total"}}
+        "input": {"results": {"$": "steps.import_list_events.output.results"}, "total": {"$": "steps.import_list_events.output.total"}}
       }
     },
     {
@@ -156,7 +151,7 @@
       "with": {
         "channelId": {"$": "vars.channelId"},
         "eventId": {"$": "foreach.item"},
-        "companyId": {"$": "vars.companyId"},
+        "companyId": {"$": "const.account_id"},
         "mappingLabels": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}
       }
     },
@@ -165,7 +160,7 @@
       "uses": {"app": "@w6w/script", "action": "run"},
       "with": {
         "code": "var id = input.eventId; var ms = Array.isArray(input.mappings) ? input.mappings : []; var exp = input.expected || {}; var keys = Object.keys(exp); var prefix = 'urn:1:' + input.companyId + ':'; var hits = []; for (var i = 0; i < ms.length; i++) { var m = ms[i] || {}; var u = m.mappedUrn || m.urn; var l = m.labels || {}; var ok = false; var id2 = null; if (typeof u === 'string' && u.indexOf(prefix) === 0) { var rest = u.slice(prefix.length); var ci = rest.indexOf(':/events/'); if (ci > 0 && rest.indexOf(':') === ci) { id2 = rest.slice(ci + 9); ok = id2.length > 0 && id2.indexOf('/') === -1; } } for (var k = 0; ok && k < keys.length; k++) { if (typeof exp[keys[k]] !== 'string' || exp[keys[k]] === '' || l[keys[k]] !== exp[keys[k]]) ok = false; } if (ok) hits.push(id2); } if (keys.length === 0) { return { cohostEventId: id, mapped: false, reason: 'no expected channel labels supplied' }; } if (hits.length === 0) { return { cohostEventId: id, mapped: false, reason: 'unmapped: no Flite event mapped to this event by this channel' }; } if (hits.length > 1) { return { cohostEventId: id, mapped: false, reason: 'ambiguous: ' + hits.length + ' Flite events mapped by this channel' }; } return { cohostEventId: id, mapped: true, fliteEventId: hits[0] };",
-        "input": {"eventId": {"$": "foreach.item"}, "mappings": {"$": "steps.ev_snapshot.output.mappings.event"}, "companyId": {"$": "vars.companyId"}, "expected": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}}
+        "input": {"eventId": {"$": "foreach.item"}, "mappings": {"$": "steps.ev_snapshot.output.mappings.event"}, "companyId": {"$": "const.account_id"}, "expected": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}}
       }
     },
     {
@@ -173,7 +168,7 @@
       "uses": {"app": "vip.cohost.transformers.flite", "action": "order-import-pages"},
       "with": {
         "targets": {"$": "steps.import_each_event.output.items"},
-        "maxPages": {"$": "vars.importMaxPages"}
+        "maxPages": 10
       }
     },
     {
