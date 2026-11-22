@@ -239,7 +239,7 @@ export class Matrix {
     this.tag = `fsc-e2e-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   }
   get channelId(): string { return this.setup.channel.channelId; }
-  subId(trigger: "channel_changed" | "channel_ticket_changed"): string {
+  subId(trigger: "channel_changed"): string {
     const s = (this.setup.subscriptions as any[]).find((x) => x.trigger === trigger);
     if (!s?.id) throw new Error(`setup.json has no ${trigger} subscription`);
     return s.id;
@@ -269,7 +269,7 @@ export class Matrix {
   }
 
   /** Cohost's webhook dispatcher does not run in slot-2: deliver the ping it would send, to the workflow's trigger URL. */
-  async ping(trigger: "channel_changed" | "channel_ticket_changed", action: string, resourcePath: string, data?: Record<string, unknown>): Promise<string> {
+  async ping(trigger: "channel_changed", action: string, resourcePath: string, data?: Record<string, unknown>): Promise<string> {
     const id = `trg_fsc${rid()}`;
     const body = { id, action, timestamp: new Date().toISOString(), urn: `urn:1:acme-corp:cohost-falcon:${resourcePath}`, context: { companyId: "acme-corp", service: "cohost-falcon", resourcePath }, ...(data ? { data } : {}) };
     if (!this.h.o.apply) return id;
@@ -630,10 +630,10 @@ const R9: RowFn = async (m) => {
 };
 
 // ---- R10-R13: ticket lifecycle, capacity, cross-company, unsupported tickets ----
-/** Ticket-triggered cycle: one `channel_ticket_changed` ping for a ticket of the event, then its single run. */
+/** Ticket-triggered cycle: one `channel_changed` ping (offering.* action) for a ticket of the event, then its single run. */
 async function tcycle(m: Matrix, eventId: string, ticketId: string, action: "offering.created" | "offering.updated" | "offering.deleted") {
   const before = await m.runIds();
-  await m.ping("channel_ticket_changed", action, `/events/${eventId}/tickets/${ticketId}`);
+  await m.ping("channel_changed", action, `/events/${eventId}/tickets/${ticketId}`);
   const run = (await m.waitRuns(before, 1))[0];
   return { run, out: m.syncOut(run) };
 }
