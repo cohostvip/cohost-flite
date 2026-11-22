@@ -207,10 +207,11 @@ export class FliteClient {
     return event as unknown as FliteEvent;
   }
 
-  async createEvent(fields: Record<string, string>, flyer: Omit<MultipartFile, "name">): Promise<FliteCreatedEvent> {
+  /** The flyer is optional: Flite accepts a create without `hostFlyer` (sandbox, 2026-11-21). */
+  async createEvent(fields: Record<string, string>, flyer?: Omit<MultipartFile, "name">): Promise<FliteCreatedEvent> {
     const result = await this.request("/create-event-partner", {
       method: "POST",
-      raw: multipart(fields, [{ ...flyer, name: "hostFlyer" }]),
+      raw: multipart(fields, flyer ? [{ ...flyer, name: "hostFlyer" }] : []),
     });
     const event = object(result.data);
     if (typeof event._id !== "string") throw new Error("Flite returned an invalid event");

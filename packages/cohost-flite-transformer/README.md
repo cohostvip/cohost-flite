@@ -34,8 +34,9 @@ the anonymized live captures and the documented examples.
 - **Money.** Flite uses major units (`12.5`), Cohost uses `"USD,1250"`. Flite returns `"usd"`; Cohost
   uses upper case. Events and tickets carry no currency, so pass the organization's `currency`
   (USD by default).
-- **Event status.** `isEventEnd` → `ended`, `Approved` → `live`, `Pending` → `queued`, anything else →
-  `draft`. `public` is `Approved` and `showEvent`.
+- **Event status.** `isEventEnd` → `ended`, `Deleted` (a soft-deleted event) → `archived`,
+  `Approved` → `live`, `Pending` → `queued`, anything else → `draft`. `public` is `Approved` and
+  `showEvent`.
 - **Address.** Flite state names (`New York`) become region codes (`NY`), and back. Country is `US`.
 - **Description.** Flite HTML becomes plain text. The original HTML is written back unless the text
   was edited.

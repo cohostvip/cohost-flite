@@ -16,7 +16,7 @@ export interface CreateEventInput {
   endDate: string;
   startTime: string;
   endTime: string;
-  flyer: FileRef | string;
+  flyer?: FileRef | string;
   ebEventId?: string;
 }
 
@@ -54,7 +54,7 @@ export default {
   resource: "event",
   idempotent: false,
   description:
-    "Create an event in the connected organization, uploading its flyer image. Add tickets with Create Ticket.",
+    "Create an event in the connected organization, optionally uploading its flyer image. Add tickets with Create Ticket.",
   params: [
     { key: "eventName", label: "Event name", type: "string", required: true },
     { key: "description", label: "Description", type: "text", required: true },
@@ -67,7 +67,7 @@ export default {
     { key: "startTime", label: "Start time", type: "string", required: true, hint: "24-hour HH:mm, e.g. 19:00" },
     { key: "endDate", label: "End date", type: "date", required: true, hint: "YYYY-MM-DD" },
     { key: "endTime", label: "End time", type: "string", required: true, hint: "24-hour HH:mm, e.g. 23:00" },
-    { key: "flyer", label: "Flyer image", type: "file", required: true, hint: "PNG, JPEG, GIF or WebP." },
+    { key: "flyer", label: "Flyer image", type: "file", required: false, hint: "Optional. PNG, JPEG, GIF or WebP." },
     { key: "showEvent", label: "Show publicly", type: "boolean", default: true },
     { key: "rsvpCapacity", label: "RSVP capacity", type: "number", advanced: true },
     { key: "ebEventId", label: "External box office event ID", type: "string", advanced: true },
@@ -78,7 +78,11 @@ export default {
   ],
   async execute(input, ctx) {
     const fields = createEventFields(input);
-    if (!input.flyer) throw new Error("Flyer image is required");
+    // Flite's reference calls the flyer required, but the sandbox created an event without one.
+    if (!input.flyer) {
+      const event = await new FliteClient(ctx).createEvent(fields);
+      return { event, eventId: event._id };
+    }
     if (!ctx.file) throw new Error("This W6W host does not provide file access, which the flyer upload needs");
     const { ref, bytes } = await ctx.file.read(input.flyer);
     const contentType = ref.contentType.split(";")[0].trim().toLowerCase();

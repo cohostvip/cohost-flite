@@ -109,6 +109,10 @@ test("event status and visibility", () => {
   assert.equal(fliteEventToCohost(source, { ...event, status: "Pending" }).public, false);
   assert.equal(fliteEventToCohost(source, { ...event, isEventEnd: true }).status, "ended");
   assert.equal(fliteEventToCohost(source, { ...event, showEvent: false }).public, false);
+  // get-event returns a soft-deleted event with status "Deleted".
+  assert.equal(fliteEventToCohost(source, { ...event, status: "Deleted" }).status, "archived");
+  assert.equal(fliteEventToCohost(source, { ...event, status: "Deleted" }).public, false);
+  assert.equal(fliteEventToCohost(source, { ...event, status: "Deleted", isEventEnd: true }).status, "ended");
   assert.equal(fliteEventToCohost(source, { ...event, hostFlyer: [] }).flyer, null);
 });
 

@@ -82,9 +82,10 @@ Deno-only and is not run here. Tests use anonymized live fixtures, synthetic rec
 ## Local credentials
 
 Root `.env.local` was copied from the original runtime app. It contains the existing
-`FLITE_BEARER_TOKEN`, `FLITE_TEST_EVENT_ID`, and `FLITE_API_URL`. It is Git-ignored, has permissions
-`0600`, and is excluded from both release packages. W6W connections store their credentials
-independently.
+`FLITE_BEARER_TOKEN`, `FLITE_TEST_EVENT_ID`, and `FLITE_API_URL`, and the Flite sandbox account as
+`FLITE_SANDBOX_UNAME`/`FLITE_SANDBOX_PWD`. The sandbox keys are read only by local probe scripts
+under `.local/`; no committed code reads them. `.env.local` is Git-ignored, has permissions `0600`,
+and is excluded from both release packages. W6W connections store their credentials independently.
 
 On 2026-11-12, `POST /api/partner-login` succeeded using the user-provided
 `FLITE_WEBSITE_UNAME` and `FLITE_WEBSITE_PWD` in `.env.local`. The new seven-day partner
@@ -109,6 +110,26 @@ end to end on staging through the partner-session sign hook, again deleting what
 Anonymized copies are the `staging-*` fixtures in `tests/fixtures/live/`. The same run showed that
 `GET /api/get-webhook-url` answers `{ data: { webhookUrl } }`; the client had read a top-level
 `webhookUrl`, so `register-webhook` could not see an existing consumer. That is fixed.
+
+On 2026-11-21, Flite's sandbox account was used to create, change and delete events and ticket
+types, and to read its orders, recording every request and response (`.local/samples/sandbox-*`).
+The account signs in on both hosts, and **staging and production return the same data**: an event
+created on staging reads back on production, and orders are identical. Staging is not an isolated
+copy, so a "staging only" write is not a safe write. Behaviors learned, now reflected in the apps:
+
+- Ticket types have no fee or delivery fields and no minimum per cart; `customFees`, `adminFee`,
+  `serviceFee`, `deliveryFee` and `minCart` are ignored. Create also ignores `maxCart`, which
+  defaults to 10 (capacity defaults to 2000, availability to `true`).
+- Event status (`Approved`, `Pending`, `Deleted`) is read-only; sandbox events are approved at
+  once. `showEvent` is writable through `update-event-properties`, and ending an event is only
+  `update-event-end-toggle`, which leaves ticket availability unchanged. `state` and `zipCode` are
+  updatable, although the reference says they are not.
+- Unknown or ignored fields answer HTTP 200 `No changes detected`, and so does an empty update,
+  where the reference says 400. Flite also stores a sub-cent price as sent and accepts a negative
+  price on update. Inputs are therefore validated locally, before the call.
+- An unknown event answers HTTP 400 (not authorized); an unknown or deleted ticket answers 404.
+- A create without a flyer succeeds (`hostFlyer: []`), so the flyer is optional.
+- A deleted event still reads back, with status `Deleted`; the transformer maps it to `archived`.
 
 The supplied reference's success examples are available in
 [`samples/documented`](samples/documented/README.md), including events, tickets,
