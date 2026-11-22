@@ -1,6 +1,6 @@
 {
   "name": "cohost-flite-transformer-w6w",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Offline Cohost to Flite action inputs and Flite to Cohost data transformations.",
   "license": "ISC",
   "author": {
@@ -20,8 +20,15 @@
     ],
     "appearance": {
       "icon": {
-        "url": "./assets/icon.png",
-        "alt": "Flite"
+        "url": "./assets/icon.svg",
+        "alt": "Cohost ⇄ Flite"
+      },
+      "brandColor": "#23dcff",
+      "darkMode": {
+        "icon": {
+          "url": "./assets/icon-dark.svg",
+          "alt": "Cohost ⇄ Flite"
+        }
       }
     },
     "network": {

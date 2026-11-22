@@ -26,6 +26,8 @@ export interface FliteEventOptions {
 
 function eventStatus(event: AnyFliteEvent): CohostEventStatus {
   if (event.isEventEnd) return "ended";
+  // A soft-deleted event still reads back, with status "Deleted".
+  if (event.status === "Deleted") return "archived";
   if (event.status === "Approved") return "live";
   if (event.status === "Pending") return "queued";
   return "draft";
