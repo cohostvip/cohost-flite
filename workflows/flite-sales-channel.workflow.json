@@ -21,17 +21,13 @@
       "with": { "channelId": { "$": "vars.channelId" }, "actions": ["event.change", "ticket.change"] }
     },
     {
-      "id": "race",
-      "uses": { "app": "@w6w/race", "action": "race" }
-    },
-    {
       "id": "snapshot",
       "uses": { "app": "vip.cohost.w6w", "action": "get-channel-event-snapshot", "connectionRef": "cohost" },
       "with": {
         "channelId": { "$": "vars.channelId" },
-        "eventId": { "$": "steps.race.output.meta.eventId" },
-        "companyId": { "$": "steps.race.output.meta.companyId" },
-        "listingId": { "$": "steps.race.output.meta.listingId" },
+        "eventId": { "$": "steps.channel_changed.output.meta.eventId" },
+        "companyId": { "$": "steps.channel_changed.output.meta.companyId" },
+        "listingId": { "$": "steps.channel_changed.output.meta.listingId" },
         "mappingLabels": {
           "provider": "flite",
           "env": { "$": "vars.env" },
@@ -232,8 +228,7 @@
     }
   ],
   "edges": [
-    { "from": "channel_changed", "to": "race" },
-    { "from": "race", "to": "snapshot" },
+    { "from": "channel_changed", "to": "snapshot" },
     { "from": "snapshot", "to": "desired" },
     { "from": "desired", "to": "sync" },
     { "from": "sync", "to": "register" },

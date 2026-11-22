@@ -28,7 +28,7 @@ const mutations: Array<[string, (wf: any) => void, RegExp]> = [
   }, /exactly one channel trigger node/],
   ["old two-trigger shape rejected", (wf) => {
     wf.nodes.push({ id: "channel_ticket_changed", uses: { app: "vip.cohost.w6w", action: "channel-changed", trigger: true, connectionRef: "cohost" }, with: { channelId: { $: "vars.channelId" } } });
-    wf.edges.push({ from: "channel_ticket_changed", to: "race" });
+    wf.edges.push({ from: "channel_ticket_changed", to: "snapshot" });
   }, /exactly one channel trigger node/],
   ["old event-changed key rejected", (wf) => { node(wf, "channel_changed").uses.action = "channel-event-changed"; }, /unknown trigger|exactly one channel trigger node/],
   ["old ticket-changed key rejected", (wf) => { node(wf, "channel_changed").uses.action = "channel-ticket-changed"; }, /unknown trigger|exactly one channel trigger node/],
@@ -163,7 +163,7 @@ test("workflow has the one channel-scoped root plus the Flite order root, and no
   const t = all.filter((n: any) => n.id !== "order_placed");
   for (const n of t) assert.deepEqual(n.with.channelId, { $: "vars.channelId" });
   assert.deepEqual(node(wf, "channel_changed").with.actions, ["event.change", "ticket.change"]);
-  assert.deepEqual(wf.edges.filter((e: any) => e.from === "channel_changed"), [{ from: "channel_changed", to: "race" }]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.from === "channel_changed"), [{ from: "channel_changed", to: "snapshot" }]);
   assert.ok(!wf.nodes.some((n: any) => n.id === "channel_ticket_changed"));
   assert.ok(!/channel[-_](event|ticket)[-_]changed/.test(readFileSync(FILE, "utf8")));
 });
@@ -190,13 +190,13 @@ const resolve = (v: any, ctx: any): any => {
 
 test("snapshot expressions resolve channelId/eventId/companyId for both actions", () => {
   const w = node(load(), "snapshot").with;
-  assert.equal(w.eventId.$, "steps.race.output.meta.eventId");
-  assert.equal(w.companyId.$, "steps.race.output.meta.companyId");
+  assert.equal(w.eventId.$, "steps.channel_changed.output.meta.eventId");
+  assert.equal(w.companyId.$, "steps.channel_changed.output.meta.companyId");
   assert.equal(w.channelId.$, "vars.channelId");
   assert.equal(w.mappingLabels.channelId.$, "vars.channelId");
   for (const root of ["event.change", "ticket.change"]) {
     const payload = { meta: { channelId: "ch1", eventId: `ev_${root}`, companyId: "co1" } };
-    const r = resolve(w, { vars: { channelId: "ch1", env: "sandbox", org: "o" }, steps: { race: { output: payload } } });
+    const r = resolve(w, { vars: { channelId: "ch1", env: "sandbox", org: "o" }, steps: { channel_changed: { output: payload } } });
     assert.equal(r.eventId, `ev_${root}`);
     assert.equal(r.companyId, "co1");
     assert.equal(r.channelId, "ch1");
@@ -216,7 +216,7 @@ test("order root: wired order_placed -> transform -> mapping -> guard -> upsert;
   }
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "order_upsert"), [{ from: "order_guard", to: "order_upsert" }]);
   assert.equal(wf.edges.filter((e: any) => e.from === "order_upsert").length, 0);
-  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "snapshot").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.equal(node(wf, "order_placed").uses.connectionRef, "flite");
   assert.equal(node(wf, "order_mapping").uses.connectionRef, "cohost");
   assert.equal(node(wf, "order_upsert").uses.connectionRef, "cohost");
@@ -401,10 +401,19 @@ test("import root: four roots, the import root is detached from the other three"
     const refs = [...JSON.stringify(n.with ?? {}).matchAll(/"steps\.([A-Za-z0-9_-]+)\./g)].map((m) => m[1]);
     for (const r of refs) assert.equal(IMPORT_IDS.includes(n.id), IMPORT_IDS.includes(r), `${n.id} reads steps.${r}`);
   }
-  assert.deepEqual(wf.edges.filter((e: any) => e.to === "race").map((e: any) => e.from).sort(), ["channel_changed"]);
+  assert.deepEqual(wf.edges.filter((e: any) => e.to === "snapshot").map((e: any) => e.from).sort(), ["channel_changed"]);
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "imp_upsert"), [{ from: "imp_transform", to: "imp_upsert" }]);
   assert.deepEqual(wf.edges.filter((e: any) => e.to === "import_each_order"), [{ from: "import_complete", to: "import_each_order" }]);
   assert.equal(node(wf, "imp_upsert").uses.action, "upsert-order");
+});
+
+test("race node and steps.race refs are rejected", async () => {
+  const a = load();
+  a.nodes.push({ id: "race", uses: { app: "@w6w/race", action: "race" } });
+  assert.ok((await validateWorkflow(a)).some((e) => /@w6w\/race node is forbidden/.test(e)));
+  const b = load();
+  node(b, "snapshot").with.eventId = { $: "steps.race.output.meta.eventId" };
+  assert.ok((await validateWorkflow(b)).some((e) => /steps\.race references are forbidden/.test(e)));
 });
 
 const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
@@ -412,7 +421,7 @@ const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
     wf.nodes = wf.nodes.filter((n: any) => !IMPORT_IDS.includes(n.id));
     wf.edges = wf.edges.filter((e: any) => !IMPORT_IDS.includes(e.from) && !IMPORT_IDS.includes(e.to));
   }, /missing import-root step import_start/],
-  ["import start connected to the race root", (wf) => { wf.edges.push({ from: "import_start", to: "race" }); }, /import root must be detached.*import_start -> race/],
+  ["import start connected to the snapshot", (wf) => { wf.edges.push({ from: "import_start", to: "snapshot" }); }, /import root must be detached.*import_start -> snapshot/],
   ["order root connected into the import root", (wf) => { wf.edges.push({ from: "order_guard", to: "import_list_events" }); }, /import root must be detached.*order_guard -> import_list_events/],
   ["import root feeding the order guard", (wf) => { wf.edges.push({ from: "import_complete", to: "order_guard" }); }, /import root must be detached.*import_complete -> order_guard/],
   ["trigger feeding import start", (wf) => { wf.edges.push({ from: "channel_changed", to: "import_start" }); }, /import root must be detached|import_start must have no inbound edge/],

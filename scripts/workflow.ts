@@ -11,7 +11,6 @@ export const A_TRIGGERS = ["channel-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
 const APP_X = "vip.cohost.transformers.flite";
-const RACE = "@w6w/race";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -51,13 +50,8 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   for (const t of triggers) {
     if (t.with?.channelId === undefined) errs.push(`trigger ${t.id} must carry a channelId param`);
   }
-  const races = nodes.filter((n) => n.uses?.app === RACE);
-  if (races.length !== 1) errs.push("need exactly one @w6w/race node");
-  const race = races[0];
-  for (const t of triggers) {
-    const out = edges.filter((e) => e.from === t.id);
-    if (out.length !== 1 || (race && out[0].to !== race.id)) errs.push(`trigger ${t.id} needs exactly one edge into the race node`);
-  }
+  if (nodes.some((n) => n.uses?.app === "@w6w/race")) errs.push("@w6w/race node is forbidden (a single trigger feeds the snapshot directly)");
+  if (/steps\.race\b/.test(JSON.stringify(nodes))) errs.push("steps.race references are forbidden (read steps.<trigger>.output.meta)");
   const byAction = (app: string, action: string) => nodes.find((n) => n.uses?.app === app && n.uses?.action === action && n.uses?.trigger !== true);
   // the transformer takes companyId from const.account_id and the source connection id from a Flite step's metadata, never from vars
   for (const n of nodes.filter((x) => x.uses?.app === APP_X)) {
@@ -90,8 +84,14 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
   // terminal: a script step that throws when sync errors non-empty
   const report = nodes.find((n) => n.id === "report" && n.uses?.app === "@w6w/script");
   if (!report) errs.push("missing terminal failing step (@w6w/script)");
-  if (race && snap && desired && sync && reg && report) {
-    const chain = [race, snap, desired, sync, reg, report];
+  if (snap) {
+    for (const t of triggers) {
+      const out = edges.filter((e) => e.from === t.id);
+      if (out.length !== 1 || out[0].to !== snap.id) errs.push(`trigger ${t.id} needs exactly one edge into the snapshot node`);
+    }
+  }
+  if (snap && desired && sync && reg && report) {
+    const chain = [snap, desired, sync, reg, report];
     for (let i = 0; i < chain.length - 1; i++) {
       if (!edges.some((e) => e.from === chain[i].id && e.to === chain[i + 1].id)) errs.push(`missing edge ${chain[i].id} -> ${chain[i + 1].id}`);
     }
@@ -99,10 +99,12 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
     if (edges.some((e) => e.from === report.id)) errs.push("terminal step must have no outgoing edge");
     const j = (x: unknown) => JSON.stringify(x ?? null);
     const w = (n: Json) => n.with ?? {};
-    for (const k of ["eventId", "companyId"]) {
-      if (!j(w(snap)[k]).includes(`steps.${race.id}.output.meta.${k}`)) errs.push(`snapshot.${k} must come from steps.${race.id}.output.meta.${k}`);
+    const trig = triggers[0];
+    if (trig) {
+      for (const k of ["eventId", "companyId", "listingId"]) {
+        if (!j(w(snap)[k]).includes(`steps.${trig.id}.output.meta.${k}`)) errs.push(`snapshot.${k} must come from steps.${trig.id}.output.meta.${k}`);
+      }
     }
-    if (!j(w(snap).listingId).includes(`steps.${race.id}.output.meta.listingId`)) errs.push("snapshot.listingId must come from race meta");
     const ml = w(snap).mappingLabels ?? {};
     if (Object.keys(ml).sort().join() !== "channelId,env,org,provider" || ml.provider !== "flite") errs.push("mappingLabels must be exactly {provider:flite, env, org, channelId} (no listingId)");
     const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
