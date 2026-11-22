@@ -7,7 +7,7 @@ updates, stops and reopens; it never deletes anything on Flite.
 ## Pipeline
 
 One channel-scoped root (further roots, for orders and import, are described below): the single `channel-changed` trigger, with `actions` `event.change` / `ticket.change` (payload `action` says which; ticket changes pass only for events listed on the channel).
-It takes a `channelId` param, so tickets of unrelated events never start a run. It feeds one `@w6w/race` node
+It takes a `channelId` param, so tickets of unrelated events never start a run. It feeds the snapshot step directly
 (payload `meta.{channelId, eventId, companyId, …}`), then:
 
 1. `get-channel-event-snapshot` (app `vip.cohost.w6w`) — channel view, owner event + tickets, listing, RMS mappings.
@@ -20,12 +20,12 @@ Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, t
 
 ## Orders
 
-A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_mapping` (`resolve-urn`) -> `order_guard` (`@w6w/script`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
+A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
 
 - **Deferred payment.** The converter always emits `paymentMethod: "deferred"`, for paid, free and refunded Flite orders alike: Flite collected the money. Amounts stay in cents, with currency, payment date, line items and buyer from the Flite order.
-- **Limitation (verified).** `POST /orders` strips a client-supplied `paymentMethod` (`provenance.ts:19`, `create.ts` `stripProvenance`). So recording the order as deferred on the Cohost side needs a server change. This workflow does not make that change, and nothing here promises it.
+- **Cohost side.** `POST /orders` strips a client-supplied `paymentMethod` except exactly `"deferred"` from a connection-authenticated write (cohost `packages/domains/bll/orders/src/orders/provenance.ts` `deferredPaymentMethod`, used by `create.ts`). This workflow writes through the Cohost connection, so its orders are stored as deferred; a buyer or dashboard write still cannot set the method.
 - **Idempotency.** The order URN is `urn:1:<companyId>:flite-<env>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
-- **Mapped-event lookup and channel ownership.** `order_mapping` is `vip.cohost.w6w` `resolve-urn` (connection `cohost`) on the order's event URN (`steps.order_transform.output.order.contextId`), with no `labels` filter and no `type`. It returns that URN's own mapping doc `{urn, labels, resources}`, the doc sync registered for the Flite event. `order_guard` receives `{mapping, expected: {provider: "flite", env, org, channelId}}` (the last three from the workflow variables) and throws `unmapped Flite event: ...` unless `mapping.resources` is a non-empty array **and** every `expected` key equals `mapping.labels[key]`. So an event with no mapping, an empty mapping, or a mapping owned by another channel, env or org fails the run visibly and no order is created. Orders are never imported to a wrong event. `upsert-order` is reachable only through the guard.
+- **No URN pre-resolve.** The order root does not resolve the order's event URN itself. `POST /v1/orders` resolves the remote-URN `contextId` (and ticket URNs) through the mapping before persisting, and refuses an unresolvable or other-company one with 404. The validator rejects any `resolve-urn` step or extra step on the order path.
 - **Out of scope.** Refunds and cancellations.
 
 ## Order import (backfill)
@@ -83,7 +83,7 @@ Flite's own `capacity` is the total, including tickets it already sold. On updat
 
 ## Residual first-publish race
 
-The dedupe lookup and the mapping write are not atomic with the Flite create. Two concurrent first publishes of the same event (both see no mapping) can each call `/create-event-partner`, leaving a duplicate Flite event. The `@w6w/race` node only merges the two trigger roots into one path; it does not lock across runs, and there is no durable create claim. Once a mapping is registered, later runs converge on the smallest Flite id and emit a warning. The orphan is not deleted (sync never deletes) and must be cleaned up by hand. A durable create claim is deferred to follow-ups.
+The dedupe lookup and the mapping write are not atomic with the Flite create. Two concurrent first publishes of the same event (both see no mapping) can each call `/create-event-partner`, leaving a duplicate Flite event. The workflow does not lock across runs, and there is no durable create claim. Once a mapping is registered, later runs converge on the smallest Flite id and emit a warning. The orphan is not deleted (sync never deletes) and must be cleaned up by hand. A durable create claim is deferred to follow-ups.
 
 ## Install steps
 
