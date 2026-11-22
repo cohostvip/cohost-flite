@@ -21,11 +21,11 @@ const script = (id: string, input: unknown) => new Function("input", code(id))(i
 const CO = "co1";
 const EXPECTED = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1" };
 const mapping = (fliteId: string, over: Record<string, unknown> = {}) => {
-  const mappedUrn = `urn:1:${CO}:flite-sandbox:/events/${fliteId}`;
+  const mappedUrn = `urn:1:${CO}:conn_f:/events/${fliteId}`;
   return { urn: mappedUrn, mappedUrn, labels: { ...EXPECTED, listingId: "l1", kind: "event", ...over } };
 };
 const target = (eventId: string, mappings: unknown[]) =>
-  script("ev_target", { eventId, mappings, companyId: CO, env: "sandbox", expected: EXPECTED }) as ImportTarget;
+  script("ev_target", { eventId, mappings, companyId: CO, expected: EXPECTED }) as ImportTarget;
 
 const plan = (i: ImportPagesInput) => (pagesAction.execute as (i: ImportPagesInput) => ImportPagesOutput)(i);
 const flatten = (i: ImportFlattenInput) => (flattenAction.execute as (i: ImportFlattenInput) => ImportFlattenOutput)(i);
@@ -48,7 +48,7 @@ function runImport(cohostEvents: Array<[string, unknown[]]>, flite: Record<strin
   const planned = plan({ targets, maxPages });
   const flat = flatten({ jobs: planned.jobs, pages: serve(flite)(planned.jobs), skipped: planned.skipped });
   script("import_complete", { truncated: flat.truncated, skipped: flat.skipped, count: flat.count });
-  const upserts = flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: CO, env: "sandbox" }));
+  const upserts = flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: CO, connectionId: "conn_f" }));
   return { planned, flat, upserts };
 }
 const THREE = { "9": [pg([1, 2], 1, true), pg([3, 4], 2, true), pg([5], 3, false)] };
@@ -66,9 +66,9 @@ test("ev_target: unmapped / foreign-labelled / malformed mappings are skipped wi
     ["other org", [mapping("9", { org: "o2" })], /unmapped/],
     ["other provider", [mapping("9", { provider: "eventbrite" })], /unmapped/],
     ["label dropped", [mapping("9", { channelId: undefined })], /unmapped/],
-    ["foreign connection in the URN", [{ ...mapping("9"), urn: `urn:1:${CO}:flite-production:/events/9`, mappedUrn: undefined }], /unmapped/],
-    ["foreign company in the URN", [{ ...mapping("9"), urn: `urn:1:other:flite-sandbox:/events/9`, mappedUrn: undefined }], /unmapped/],
-    ["not an event URN", [{ ...mapping("9"), urn: `urn:1:${CO}:flite-sandbox:/events/9/tickets/1`, mappedUrn: undefined }], /unmapped/],
+    ["empty source segment in the URN", [{ ...mapping("9"), urn: `urn:1:${CO}::/events/9`, mappedUrn: undefined }], /unmapped/],
+    ["foreign company in the URN", [{ ...mapping("9"), urn: `urn:1:other:conn_f:/events/9`, mappedUrn: undefined }], /unmapped/],
+    ["not an event URN", [{ ...mapping("9"), urn: `urn:1:${CO}:conn_f:/events/9/tickets/1`, mappedUrn: undefined }], /unmapped/],
     ["ambiguous", [mapping("9"), mapping("8")], /ambiguous/],
   ];
   for (const [name, ms, reason] of cases) {
@@ -77,8 +77,8 @@ test("ev_target: unmapped / foreign-labelled / malformed mappings are skipped wi
     assert.equal(t.fliteEventId, undefined, name);
     assert.match(String(t.reason), reason, name);
   }
-  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, env: "sandbox", expected: {} }).mapped, false, "no expected labels never maps");
-  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, env: "sandbox", expected: { ...EXPECTED, org: "" } }).mapped, false, "empty expected label never maps");
+  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, expected: {} }).mapped, false, "no expected labels never maps");
+  assert.equal(script("ev_target", { eventId: "e", mappings: [mapping("9")], companyId: CO, expected: { ...EXPECTED, org: "" } }).mapped, false, "empty expected label never maps");
 });
 
 test("unmapped / foreign-channel event: skipped visibly, zero page jobs, zero orders, zero upserts", () => {
@@ -104,7 +104,7 @@ test("3-page event: all pages consumed, every order has a stable URN and deferre
   assert.equal(r.upserts.length, 5);
   for (const u of r.upserts) {
     assert.equal(u.order.paymentMethod, "deferred");
-    assert.match(u.context.urn, new RegExp(`^urn:1:${CO}:flite-sandbox:/orders/65f1e00000000000000002\\d\\d$`));
+    assert.match(u.context.urn, new RegExp(`^urn:1:${CO}:conn_f:/orders/65f1e00000000000000002\\d\\d$`));
   }
 });
 
@@ -115,7 +115,7 @@ test("re-run: identical upsert keys (order.urn in the upsert-order payload), no 
   const a = first.map(key);
   const b = second.map(key);
   assert.equal(a.length, 5);
-  for (const k of a) assert.match(k, new RegExp(`^urn:1:${CO}:flite-sandbox:/orders/65f1e00000000000000002\\d\\d$`));
+  for (const k of a) assert.match(k, new RegExp(`^urn:1:${CO}:conn_f:/orders/65f1e00000000000000002\\d\\d$`));
   assert.deepEqual(a, b);
   assert.equal(new Set(a).size, a.length);
   assert.deepEqual(a, first.map((u) => u.context.urn), "payload key equals the context urn");
@@ -135,4 +135,10 @@ test("import_event_ids: explicit id wins, else every channel event; an incomplet
   assert.deepEqual(script("import_event_ids", { eventId: "", results: [{ id: "a" }, { id: "b" }], total: 2 }), { eventIds: ["a", "b"] });
   assert.deepEqual(script("import_event_ids", { eventId: "", results: [], total: 0 }), { eventIds: [] });
   assert.throws(() => script("import_event_ids", { eventId: "", results: [{ id: "a" }], total: 3 }), /import not started/);
+});
+
+test("ev_target matches any source segment (the Flite connection id), not a pseudo flite-<env> id", () => {
+  const t = target("evt_1", [{ ...mapping("9"), urn: `urn:1:${CO}:conn_zzz:/events/9`, mappedUrn: undefined }]);
+  assert.equal(t.mapped, true);
+  assert.equal(t.fliteEventId, "9");
 });

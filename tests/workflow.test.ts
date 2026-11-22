@@ -243,7 +243,11 @@ const orderMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["flite connection undeclared", (wf) => { delete wf.connections.flite; }, /connectionRef flite is not declared/],
   ["upsert replaced by a non-upsert action", (wf) => { node(wf, "order_upsert").uses.action = "create-order"; }, /unknown vip\.cohost\.w6w action|missing order-root step upsert-order/],
   ["companyId variable missing", (wf) => { wf.variables = wf.variables.filter((v: any) => v.key !== "companyId"); }, /variable companyId/],
-  ["transform companyId literal", (wf) => { node(wf, "order_transform").with.companyId = "co1"; }, /companyId must be bound to vars\.companyId/],
+  ["transform companyId literal", (wf) => { node(wf, "order_transform").with.companyId = "co1"; }, /companyId must not be passed/],
+  ["transform companyId bound to vars", (wf) => { node(wf, "order_transform").with.companyId = { $: "vars.companyId" }; }, /companyId must not be bound to vars\.companyId/],
+  ["transform connectionId bound to vars", (wf) => { node(wf, "order_transform").with.connectionId = { $: "vars.connectionId" }; }, /connectionId must not be bound to vars\.connectionId/],
+  ["transform connectionId not from the order trigger meta", (wf) => { node(wf, "order_transform").with.connectionId = "c1"; }, /transform-order\.connectionId must be bound to steps\.order_placed\.meta\.connectionId/],
+  ["desired transformer given companyId via vars", (wf) => { node(wf, "desired").with.companyId = { $: "vars.companyId" }; }, /transformer node desired: companyId must not be bound to vars\.companyId/],
   ["mapping urn from wrong place", (wf) => { node(wf, "order_mapping").with.urn = { $: "steps.order_placed.output.orderId" }; }, /resolve-urn\.urn/],
   ["mapping narrowed by a labels filter", (wf) => { node(wf, "order_mapping").with.labels = { provider: "flite" }; }, /resolve-urn must take only urn \(found labels\)/],
   ["mapping narrowed by a type filter", (wf) => { node(wf, "order_mapping").with.type = "system-resource"; }, /resolve-urn must take only urn \(found type\)/],
@@ -298,7 +302,7 @@ const EXPECTED = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1
 const COMPANY = "co1";
 /** The mapping doc exactly as register-urn-mapping / sync registers an event: labels carry provider/env/org/channelId/listingId/kind/id/eventId; resources = [{...labels, urn: mappedUrn}, {urn: cohost event}]. */
 function mappingDoc(over: Record<string, unknown> = {}) {
-  const mappedUrn = `urn:1:${COMPANY}:flite-sandbox:/events/9`;
+  const mappedUrn = `urn:1:${COMPANY}:conn_f:/events/9`;
   const labels = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1", listingId: "l1", kind: "event", id: "9", eventId: "9", ...over };
   return { urn: mappedUrn, labels, resources: [{ ...labels, urn: mappedUrn }, { urn: `urn:1:${COMPANY}:cohost-falcon:/events/evt_1` }] };
 }
@@ -347,15 +351,15 @@ test("order expressions: transform reads the trigger order; upsert reads the tra
   const ctx = {
     vars: { env: "sandbox", org: "o", channelId: "ch1", companyId: "co1" },
     steps: {
-      order_placed: { output: { orderId: "o1", order: { _id: "o1" } } },
-      order_transform: { output: { order: { contextId: "urn:1:co1:flite-sandbox:/events/e1", total: 5 } } },
+      order_placed: { output: { orderId: "o1", order: { _id: "o1" } }, meta: { connectionId: "conn_f" } },
+      order_transform: { output: { order: { contextId: "urn:1:co1:conn_f:/events/e1", total: 5 } } },
     },
   };
   const t = resolve(node(wf, "order_transform").with, ctx);
-  assert.deepEqual(t, { order: { _id: "o1" }, companyId: "co1", env: "sandbox" });
+  assert.deepEqual(t, { order: { _id: "o1" }, connectionId: "conn_f" });
   assert.equal(node(wf, "order_transform").with.order.$, "steps.order_placed.output.order");
   const m = resolve(node(wf, "order_mapping").with, ctx);
-  assert.deepEqual(m, { urn: "urn:1:co1:flite-sandbox:/events/e1" });
+  assert.deepEqual(m, { urn: "urn:1:co1:conn_f:/events/e1" });
   const doc = mappingDoc();
   const g = resolve(node(wf, "order_guard").with, { ...ctx, steps: { ...ctx.steps, order_mapping: { output: doc } } });
   assert.deepEqual(g.input, { mapping: doc, expected: { provider: "flite", env: "sandbox", org: "o", channelId: "ch1" } });
@@ -427,7 +431,8 @@ const importMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["upsert replaced by a create action", (wf) => { node(wf, "imp_upsert").uses.action = "create-order"; }, /import-root step imp_upsert must be vip\.cohost\.w6w\/upsert-order|unknown vip\.cohost\.w6w action/],
   ["upsert data from the raw Flite order", (wf) => { node(wf, "imp_upsert").with.data.order = { $: "foreach.item.order" }; }, /imp_upsert\.data\.order/],
   ["upsert retry < 3", (wf) => { node(wf, "imp_upsert").retry.maxAttempts = 1; }, /imp_upsert needs retry/],
-  ["transform env literal", (wf) => { node(wf, "imp_transform").with.env = "sandbox"; }, /imp_transform\.env must be bound/],
+  ["transform connectionId from vars", (wf) => { node(wf, "imp_transform").with.connectionId = { $: "vars.connectionId" }; }, /imp_transform\.connectionId must be bound to steps\.import_conn\.meta\.connectionId/],
+  ["transform companyId via vars", (wf) => { node(wf, "imp_transform").with.companyId = { $: "vars.companyId" }; }, /imp_transform: companyId must not be bound to vars\.companyId/],
   ["transform eventId dropped", (wf) => { delete node(wf, "imp_transform").with.eventId; }, /imp_transform\.eventId must be bound/],
   ["list-orders eventId literal", (wf) => { node(wf, "page_fetch").with.eventId = "e1"; }, /page_fetch must read/],
   ["list-orders unretried", (wf) => { delete node(wf, "page_fetch").retry; }, /page_fetch needs retry/],
@@ -492,7 +497,7 @@ test("install --apply binds the import root's cohost and flite connections; chan
   assert.equal(await main(args, io), 0);
   const sent = JSON.parse(o.calls[0].init.body);
   assert.deepEqual(validateImportRoot(sent, sent.nodes, sent.edges), []);
-  for (const [id, ref, conn] of [["import_list_events", "cohost", "conn_c"], ["ev_snapshot", "cohost", "conn_c"], ["imp_upsert", "cohost", "conn_c"], ["page_fetch", "flite", "conn_f"]]) {
+  for (const [id, ref, conn] of [["import_list_events", "cohost", "conn_c"], ["ev_snapshot", "cohost", "conn_c"], ["imp_upsert", "cohost", "conn_c"], ["import_conn", "flite", "conn_f"], ["page_fetch", "flite", "conn_f"]]) {
     assert.equal(node(sent, id).uses.connectionRef, ref);
     assert.equal(sent.connections[ref].connection, conn, `${id} -> ${ref} bound at install`);
     assert.equal(node(sent, id).uses.connection, undefined, "no connection id embedded in the node");

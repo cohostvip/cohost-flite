@@ -85,8 +85,7 @@
       "uses": { "app": "vip.cohost.transformers.flite", "action": "transform-order" },
       "with": {
         "order": { "$": "steps.order_placed.output.order" },
-        "companyId": { "$": "vars.companyId" },
-        "env": { "$": "vars.env" }
+        "connectionId": { "$": "steps.order_placed.meta.connectionId" }
       }
     },
     {
@@ -121,6 +120,11 @@
     {
       "id": "import_start",
       "uses": {"app": "@w6w/trigger", "action": "manual"}
+    },
+    {
+      "id": "import_conn",
+      "uses": {"app": "vip.cohost.flite", "action": "list-events", "connectionRef": "flite"},
+      "with": {"limit": 1}
     },
     {
       "id": "import_list_events",
@@ -160,8 +164,8 @@
       "id": "ev_target",
       "uses": {"app": "@w6w/script", "action": "run"},
       "with": {
-        "code": "var id = input.eventId; var ms = Array.isArray(input.mappings) ? input.mappings : []; var exp = input.expected || {}; var keys = Object.keys(exp); var prefix = 'urn:1:' + input.companyId + ':flite-' + input.env + ':/events/'; var hits = []; for (var i = 0; i < ms.length; i++) { var m = ms[i] || {}; var u = m.mappedUrn || m.urn; var l = m.labels || {}; var ok = typeof u === 'string' && u.indexOf(prefix) === 0 && u.length > prefix.length && u.indexOf('/', prefix.length) === -1; for (var k = 0; ok && k < keys.length; k++) { if (typeof exp[keys[k]] !== 'string' || exp[keys[k]] === '' || l[keys[k]] !== exp[keys[k]]) ok = false; } if (ok) hits.push(u.slice(prefix.length)); } if (keys.length === 0) { return { cohostEventId: id, mapped: false, reason: 'no expected channel labels supplied' }; } if (hits.length === 0) { return { cohostEventId: id, mapped: false, reason: 'unmapped: no Flite event mapped to this event by this channel' }; } if (hits.length > 1) { return { cohostEventId: id, mapped: false, reason: 'ambiguous: ' + hits.length + ' Flite events mapped by this channel' }; } return { cohostEventId: id, mapped: true, fliteEventId: hits[0] };",
-        "input": {"eventId": {"$": "foreach.item"}, "mappings": {"$": "steps.ev_snapshot.output.mappings.event"}, "companyId": {"$": "vars.companyId"}, "env": {"$": "vars.env"}, "expected": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}}
+        "code": "var id = input.eventId; var ms = Array.isArray(input.mappings) ? input.mappings : []; var exp = input.expected || {}; var keys = Object.keys(exp); var prefix = 'urn:1:' + input.companyId + ':'; var hits = []; for (var i = 0; i < ms.length; i++) { var m = ms[i] || {}; var u = m.mappedUrn || m.urn; var l = m.labels || {}; var ok = false; var id2 = null; if (typeof u === 'string' && u.indexOf(prefix) === 0) { var rest = u.slice(prefix.length); var ci = rest.indexOf(':/events/'); if (ci > 0 && rest.indexOf(':') === ci) { id2 = rest.slice(ci + 9); ok = id2.length > 0 && id2.indexOf('/') === -1; } } for (var k = 0; ok && k < keys.length; k++) { if (typeof exp[keys[k]] !== 'string' || exp[keys[k]] === '' || l[keys[k]] !== exp[keys[k]]) ok = false; } if (ok) hits.push(id2); } if (keys.length === 0) { return { cohostEventId: id, mapped: false, reason: 'no expected channel labels supplied' }; } if (hits.length === 0) { return { cohostEventId: id, mapped: false, reason: 'unmapped: no Flite event mapped to this event by this channel' }; } if (hits.length > 1) { return { cohostEventId: id, mapped: false, reason: 'ambiguous: ' + hits.length + ' Flite events mapped by this channel' }; } return { cohostEventId: id, mapped: true, fliteEventId: hits[0] };",
+        "input": {"eventId": {"$": "foreach.item"}, "mappings": {"$": "steps.ev_snapshot.output.mappings.event"}, "companyId": {"$": "vars.companyId"}, "expected": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}}
       }
     },
     {
@@ -220,8 +224,7 @@
       "with": {
         "order": {"$": "foreach.item.order"},
         "eventId": {"$": "foreach.item.eventId"},
-        "companyId": {"$": "vars.companyId"},
-        "env": {"$": "vars.env"}
+        "connectionId": {"$": "steps.import_conn.meta.connectionId"}
       }
     },
     {
@@ -244,7 +247,8 @@
     { "from": "order_transform", "to": "order_mapping" },
     { "from": "order_mapping", "to": "order_guard" },
     { "from": "order_guard", "to": "order_upsert" },
-    { "from": "import_start", "to": "import_list_events" },
+    { "from": "import_start", "to": "import_conn" },
+    { "from": "import_conn", "to": "import_list_events" },
     { "from": "import_list_events", "to": "import_event_ids" },
     { "from": "import_event_ids", "to": "import_each_event" },
     { "from": "import_each_event", "to": "import_pages" },

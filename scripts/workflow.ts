@@ -51,6 +51,14 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
     if (out.length !== 1 || (race && out[0].to !== race.id)) errs.push(`trigger ${t.id} needs exactly one edge into the race node`);
   }
   const byAction = (app: string, action: string) => nodes.find((n) => n.uses?.app === app && n.uses?.action === action && n.uses?.trigger !== true);
+  // the transformer takes companyId from const.account_id and the source connection id from a Flite step's metadata, never from vars
+  for (const n of nodes.filter((x) => x.uses?.app === APP_X)) {
+    for (const k of ["companyId", "connectionId"]) {
+      const v = n.with?.[k];
+      if (v !== undefined && typeof v === "object" && typeof v.$ === "string" && /^vars\./.test(v.$)) errs.push(`transformer node ${n.id}: ${k} must not be bound to ${v.$} (companyId is a hidden const; connectionId comes from step metadata)`);
+      if (k === "companyId" && v !== undefined) errs.push(`transformer node ${n.id}: companyId must not be passed (hidden const)`);
+    }
+  }
   for (const n of nodes) {
     const u = n.uses ?? {};
     if (isOrderTrigger(n)) continue;
@@ -157,8 +165,7 @@ function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | 
   const w = (n: Json) => n.with ?? {};
   const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
   if (!bound(w(xform).order, `steps.${trig.id}.output.order`)) errs.push(`transform-order.order must be bound to steps.${trig.id}.output.order`);
-  if (!bound(w(xform).companyId, "vars.companyId")) errs.push("transform-order.companyId must be bound to vars.companyId");
-  if (!bound(w(xform).env, "vars.env")) errs.push("transform-order.env must be bound to vars.env");
+  if (!bound(w(xform).connectionId, `steps.${trig.id}.meta.connectionId`)) errs.push(`transform-order.connectionId must be bound to steps.${trig.id}.meta.connectionId`);
   if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === "companyId" && v.required === true)) errs.push("variable companyId (required) is missing");
   if (!bound(w(mapping).urn, `steps.${xform.id}.output.order.contextId`)) errs.push(`resolve-urn.urn must be bound to steps.${xform.id}.output.order.contextId`);
   // resolve-urn returns the URN's own mapping doc; it must not be narrowed by a labels/type filter (the guard verifies ownership instead)
@@ -183,7 +190,7 @@ function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | 
 
 /** Ids of the fourth, detached root (manual start -> channel events -> per-event mapping -> paged list-orders -> per-order transform + upsert). Pinned in worklist/T9.md "Design pins". */
 export const IMPORT_ROOT_IDS = [
-  "import_start", "import_list_events", "import_event_ids", "import_each_event", "ev_snapshot", "ev_target", "import_pages",
+  "import_start", "import_conn", "import_list_events", "import_event_ids", "import_each_event", "ev_snapshot", "ev_target", "import_pages",
   "import_each_page", "page_fetch", "import_flatten", "import_complete", "import_each_order", "imp_transform", "imp_upsert",
 ] as const;
 
@@ -191,6 +198,7 @@ const IMPORT_SET: ReadonlySet<string> = new Set(IMPORT_ROOT_IDS);
 /** Expected app/action per import-root node. */
 const IMPORT_USES: Record<string, [string, string]> = {
   import_start: ["@w6w/trigger", "manual"],
+  import_conn: [APP_F, "list-events"],
   import_list_events: [APP_A, "list-channel-events"],
   import_event_ids: ["@w6w/script", "run"],
   import_each_event: ["@w6w/control", "foreach"],
@@ -207,7 +215,7 @@ const IMPORT_USES: Record<string, [string, string]> = {
 };
 /** Sequential edges of the import root (foreach nodes have no edge to their body). */
 const IMPORT_EDGES: ReadonlyArray<[string, string]> = [
-  ["import_start", "import_list_events"], ["import_list_events", "import_event_ids"], ["import_event_ids", "import_each_event"],
+  ["import_start", "import_conn"], ["import_conn", "import_list_events"], ["import_list_events", "import_event_ids"], ["import_event_ids", "import_each_event"],
   ["import_each_event", "import_pages"], ["import_pages", "import_each_page"], ["import_each_page", "import_flatten"],
   ["import_flatten", "import_complete"], ["import_complete", "import_each_order"],
   ["ev_snapshot", "ev_target"], ["imp_transform", "imp_upsert"],
@@ -307,7 +315,6 @@ export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): stri
   if (!bound(tgt.eventId, "foreach.item")) errs.push("ev_target.input.eventId must be bound to foreach.item");
   if (!bound(tgt.mappings, "steps.ev_snapshot.output.mappings.event")) errs.push("ev_target.input.mappings must be bound to steps.ev_snapshot.output.mappings.event");
   if (!bound(tgt.companyId, "vars.companyId")) errs.push("ev_target.input.companyId must be bound to vars.companyId");
-  if (!bound(tgt.env, "vars.env")) errs.push("ev_target.input.env must be bound to vars.env");
   if (!labelsOk(tgt.expected)) errs.push("ev_target.input.expected must be exactly {provider:flite, env, org, channelId} bound to vars (channel ownership)");
   const tcode = String(w("ev_target").code ?? "");
   if (!/labels/.test(tcode) || !/mapped/.test(tcode)) errs.push("ev_target code must verify mapping labels and return mapped");
@@ -325,7 +332,7 @@ export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): stri
   const icode = String(ic.code ?? "");
   if (!/throw\b/.test(icode) || !/truncated/.test(icode)) errs.push("import_complete code must throw when truncated is non-empty");
   const xf = w("imp_transform");
-  for (const [k, ref] of [["order", "foreach.item.order"], ["eventId", "foreach.item.eventId"], ["companyId", "vars.companyId"], ["env", "vars.env"]] as const) {
+  for (const [k, ref] of [["order", "foreach.item.order"], ["eventId", "foreach.item.eventId"], ["connectionId", "steps.import_conn.meta.connectionId"]] as const) {
     if (!bound(xf[k], ref)) errs.push(`imp_transform.${k} must be bound to ${ref}`);
   }
   if (!bound(w("imp_upsert").data?.order, "steps.imp_transform.output.order")) errs.push("imp_upsert.data.order must be bound to steps.imp_transform.output.order");
@@ -334,7 +341,7 @@ export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): stri
     if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === key)) errs.push(`variable ${key} is missing`);
   }
   // connections: declared refs, bound at install (connection null in the file; main() fills them)
-  const want: Array<[string, string]> = [["import_list_events", "cohost"], ["ev_snapshot", "cohost"], ["imp_upsert", "cohost"], ["page_fetch", "flite"]];
+  const want: Array<[string, string]> = [["import_list_events", "cohost"], ["ev_snapshot", "cohost"], ["imp_upsert", "cohost"], ["import_conn", "flite"], ["page_fetch", "flite"]];
   for (const [id, ref] of want) {
     if (n(id)!.uses.connectionRef !== ref) errs.push(`node ${id} must use connectionRef ${ref}`);
     else if (!wf.connections?.[ref]) errs.push(`node ${id}: connectionRef ${ref} is not declared in connections`);
