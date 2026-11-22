@@ -7,6 +7,7 @@ import {
   guardEnv,
   planMappings,
   registration,
+  connectionSegment,
   relabelRegistrations,
   type SyncOutput,
 } from "../lib/sync.ts";
@@ -50,6 +51,7 @@ export default {
     const desired = input.desired;
     // The env guard runs before any request.
     const env = guardEnv(ctx, input.expectedEnv, desired);
+    const connectionId = connectionSegment(ctx);
     const out: SyncOutput = {
       eventId: "",
       env,
@@ -86,7 +88,7 @@ export default {
 
     if (plan.fliteEventId === undefined) {
       if (mode !== "publish" || !desired.event) return out;
-      return await createPath(client, desired, env, out, attempt);
+      return await createPath(client, desired, env, connectionId, out, attempt);
     }
 
     const eventId = plan.fliteEventId;
@@ -122,7 +124,7 @@ export default {
       const want = byId.get(tp.ticketId)!;
       if (tp.fliteTicketId === undefined) {
         if (mode !== "publish") continue; // hold never creates
-        await createTicket(client, desired, env, eventId, want, out, attempt);
+        await createTicket(client, desired, env, connectionId, eventId, want, out, attempt);
         continue;
       }
       matched.add(tp.fliteTicketId);
@@ -144,7 +146,7 @@ export default {
           client.updateTicket(ticketProperties({ eventId, ticketId: have._id, availability: "false" })));
       }
     }
-    out.registrations.push(...relabelRegistrations(desired, env, plan));
+    out.registrations.push(...relabelRegistrations(desired, env, connectionId, plan));
     return out;
   },
 } satisfies ActionDefinition<SyncEventInput>;
@@ -187,6 +189,7 @@ async function createTicket(
   client: FliteClient,
   desired: DesiredState,
   env: string,
+  connectionId: string,
   eventId: string,
   want: DesiredTicket,
   out: SyncOutput,
@@ -205,13 +208,14 @@ async function createTicket(
     }));
     id = created._id;
   });
-  if (ok) out.registrations.push(registration(desired, env, eventId, { ticketUrn: want.ticketUrn, fliteTicketId: id }));
+  if (ok) out.registrations.push(registration(desired, env, connectionId, eventId, { ticketUrn: want.ticketUrn, fliteTicketId: id }));
 }
 
 async function createPath(
   client: FliteClient,
   desired: DesiredState,
   env: string,
+  connectionId: string,
   out: SyncOutput,
   attempt: Attempt,
 ): Promise<SyncOutput> {
@@ -220,7 +224,7 @@ async function createPath(
   const eventId = created._id;
   out.eventId = eventId;
   out.operations.push({ op: "create-event", target: eventId });
-  out.registrations.push(registration(desired, env, eventId));
-  for (const want of desired.tickets) await createTicket(client, desired, env, eventId, want, out, attempt);
+  out.registrations.push(registration(desired, env, connectionId, eventId));
+  for (const want of desired.tickets) await createTicket(client, desired, env, connectionId, eventId, want, out, attempt);
   return out;
 }

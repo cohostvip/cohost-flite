@@ -1,3 +1,4 @@
+import { sourceParams } from "../lib/context.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fliteOrderToCohost } from "../convert/order.ts";
@@ -46,13 +47,20 @@ test("refunded order stays refunded but deferred", () => {
   assert.equal(r.paymentMethod, "deferred");
 });
 
-test("transform-order derives flite-<env> connection when only env given", () => {
+test("transform-order requires connectionId and uses it as the URN source segment", () => {
   const { connectionId: _c, ...rest } = source;
-  const { order, context } = run({ ...rest, env: "sandbox", order: paid() });
+  assert.throws(() => run({ ...rest, env: "sandbox", order: paid() }), /connectionId/);
+  const { order, context } = run({ ...source, order: paid() });
   assert.equal(order.paymentMethod, "deferred");
-  assert.match(context.urn, new RegExp(`:flite-sandbox:/orders/`));
-  assert.match(String(order.contextId), /:flite-sandbox:\/events\//);
+  assert.match(context.urn, new RegExp(`:${source.connectionId}:/orders/`));
+  assert.match(String(order.contextId), new RegExp(`:${source.connectionId}:/events/`));
   assert.equal(order.urn, context.urn);
-  assert.throws(() => run({ ...rest, order: paid() }), /connectionId/);
-  assert.match(run({ ...source, env: "x", order: paid() }).context.urn, new RegExp(`:${source.connectionId}:`));
+});
+
+test("sourceParams: companyId is hidden and defaults to const.account_id", () => {
+  const p = sourceParams.find((x) => x.key === "companyId") as Record<string, unknown>;
+  assert.equal(p.hidden, true);
+  assert.equal(p.required, true);
+  assert.equal(p.default, "{{ const.account_id }}");
+  assert.ok(transformOrder.params.some((x) => x.key === "companyId" && (x as Record<string, unknown>).hidden === true));
 });

@@ -4,6 +4,7 @@ import {
   chooseEventMapping,
   chooseTicketMapping,
   type DesiredState,
+  connectionSegment,
   guardEnv,
   mappedUrn,
   planMappings,
@@ -46,8 +47,8 @@ test("env guard: sandbox iff staging; mismatch with expectedEnv or labels throws
 });
 
 test("mapped URN format", () => {
-  assert.equal(mappedUrn("co", "sandbox", "e1"), "urn:1:co:flite-sandbox:/events/e1");
-  assert.equal(mappedUrn("co", "production", "e1", "t1"), "urn:1:co:flite-production:/events/e1/tickets/t1");
+  assert.equal(mappedUrn("co", "conn_1", "e1"), "urn:1:co:conn_1:/events/e1");
+  assert.equal(mappedUrn("co", "conn_1", "e1", "t1"), "urn:1:co:conn_1:/events/e1/tickets/t1");
 });
 
 test("event dedupe: none ⇒ create, one ⇒ use, many ⇒ smallest id + warning; listingId never selects", () => {
@@ -85,14 +86,14 @@ test("planMappings: unmapped event ⇒ no ids; mapped event + unmapped ticket �
 
 test("registration carries mappedUrn and every label", () => {
   const d = desired();
-  assert.deepEqual(registration(d, "sandbox", "e1"), {
+  assert.deepEqual(registration(d, "sandbox", "w6w_connection", "e1"), {
     urn: d.eventUrn,
-    mappedUrn: "urn:1:co_1:flite-sandbox:/events/e1",
+    mappedUrn: "urn:1:co_1:w6w_connection:/events/e1",
     labels: { provider: "flite", env: "sandbox", org: "org_1", channelId: "ch_1", listingId: "L2", kind: "event", id: "e1", eventId: "e1" },
   });
-  const t = registration(d, "sandbox", "e1", { ticketUrn: d.tickets[0].ticketUrn, fliteTicketId: "ft1" });
+  const t = registration(d, "sandbox", "w6w_connection", "e1", { ticketUrn: d.tickets[0].ticketUrn, fliteTicketId: "ft1" });
   assert.equal(t.urn, d.tickets[0].ticketUrn);
-  assert.equal(t.mappedUrn, "urn:1:co_1:flite-sandbox:/events/e1/tickets/ft1");
+  assert.equal(t.mappedUrn, "urn:1:co_1:w6w_connection:/events/e1/tickets/ft1");
   assert.deepEqual(t.labels, { ...t.labels, kind: "ticket", id: "ft1", eventId: "e1", listingId: "L2" });
 });
 
@@ -101,15 +102,15 @@ test("relabel only when stored listingId differs from desired", () => {
     labels: { ...labels, listingId: "L1" },
     mappings: { event: [rec("e1")], tickets: { t1: [rec("ft1", { eventId: "e1" })] } },
   });
-  assert.deepEqual(relabelRegistrations(same, "sandbox", planMappings(same)), []);
+  assert.deepEqual(relabelRegistrations(same, "sandbox", "w6w_connection", planMappings(same)), []);
   const diff = desired({ mappings: { event: [rec("e1")], tickets: { t1: [rec("ft1", { eventId: "e1" })] } } });
-  const out = relabelRegistrations(diff, "sandbox", planMappings(diff));
+  const out = relabelRegistrations(diff, "sandbox", "w6w_connection", planMappings(diff));
   assert.deepEqual(out.map((r) => r.mappedUrn), [
-    "urn:1:co_1:flite-sandbox:/events/e1",
-    "urn:1:co_1:flite-sandbox:/events/e1/tickets/ft1",
+    "urn:1:co_1:w6w_connection:/events/e1",
+    "urn:1:co_1:w6w_connection:/events/e1/tickets/ft1",
   ]);
   assert.ok(out.every((r) => r.labels.listingId === "L2"));
-  assert.deepEqual(relabelRegistrations(desired(), "sandbox", planMappings(desired())), []);
+  assert.deepEqual(relabelRegistrations(desired(), "sandbox", "w6w_connection", planMappings(desired())), []);
 });
 
 // ---- execute ----
@@ -151,7 +152,7 @@ test("publish create path: event then unmapped tickets, registrations for each",
   assert.ok(requests.every((r) => r.url.startsWith(STAGING_API_URL)));
   assert.equal(out.eventId, "fe9");
   assert.deepEqual(out.registrations.map((r) => r.mappedUrn), [
-    "urn:1:co_1:flite-sandbox:/events/fe9", "urn:1:co_1:flite-sandbox:/events/fe9/tickets/ft9",
+    "urn:1:co_1:w6w_connection:/events/fe9", "urn:1:co_1:w6w_connection:/events/fe9/tickets/ft9",
   ]);
   assert.equal(out.registrations[1].labels.eventId, "fe9");
   assert.equal(body(requests[1]).eventId, "fe9");
@@ -338,7 +339,7 @@ test("ticket create 500 after event create resolves with 1 error and the event r
   const { ctx } = context([{ success: true, data: { _id: "fe9" } }, Response.json({}, { status: 500 })], true);
   const out = await syncEvent.execute({ desired: desired({ event: evFields, tickets: [tkt("t1")] }), expectedEnv: "sandbox" }, ctx);
   assert.equal(out.errors.length, 1);
-  assert.deepEqual(out.registrations.map((r) => r.mappedUrn), ["urn:1:co_1:flite-sandbox:/events/fe9"]);
+  assert.deepEqual(out.registrations.map((r) => r.mappedUrn), ["urn:1:co_1:w6w_connection:/events/fe9"]);
   const l = out.registrations[0].labels;
   for (const k of ["provider", "env", "org", "channelId", "listingId", "id", "eventId"]) assert.ok((l as Record<string, unknown>)[k], k);
 });
@@ -349,4 +350,10 @@ test("stop with no remote tickets/already-false never writes tickets; no delete 
   assert.deepEqual(paths(requests), ["/get-event-tickets-info", "/update-event-end-toggle"]);
   assert.equal(out.registrations.length, 0);
   assert.ok(requests.every((r) => !r.url.includes("/delete-")));
+});
+
+test("connectionSegment: ctx.connection.id, or a clear error", () => {
+  assert.equal(connectionSegment(context([], true).ctx), "w6w_connection");
+  assert.throws(() => connectionSegment({}), /connection id is required/);
+  assert.throws(() => connectionSegment({ connection: { id: "a:b" } }), /valid URN segment/);
 });

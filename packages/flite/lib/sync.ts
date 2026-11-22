@@ -82,9 +82,18 @@ export function guardEnv(
   return env;
 }
 
-/** `urn:1:<companyId>:flite-<env>:/events/<id>[/tickets/<id>]` (plan.md §Pinned interface). */
-export function mappedUrn(companyId: string, env: string, eventId: string, ticketId?: string): string {
-  const base = `urn:1:${companyId}:flite-${env}:/events/${eventId}`;
+/** The URN source segment: the Flite connection's own id (HookContext), never a pseudo id. */
+export function connectionSegment(ctx: { connection?: { id?: string } }): string {
+  const id = ctx.connection?.id;
+  if (typeof id !== "string" || !/^[^\s:/?#]+$/.test(id)) {
+    throw new Error("connection id is required and must be a valid URN segment");
+  }
+  return id;
+}
+
+/** `urn:1:<companyId>:<connectionId>:/events/<id>[/tickets/<id>]`. */
+export function mappedUrn(companyId: string, connectionId: string, eventId: string, ticketId?: string): string {
+  const base = `urn:1:${companyId}:${connectionId}:/events/${eventId}`;
   return ticketId === undefined ? base : `${base}/tickets/${ticketId}`;
 }
 
@@ -165,13 +174,14 @@ export function planMappings(desired: DesiredState): MappingPlan {
 export function registration(
   desired: DesiredState,
   env: string,
+  connectionId: string,
   fliteEventId: string,
   ticket?: { ticketUrn: string; fliteTicketId: string },
 ): Registration {
   const l = desired.labels;
   return {
     urn: ticket ? ticket.ticketUrn : desired.eventUrn,
-    mappedUrn: mappedUrn(desired.companyId, env, fliteEventId, ticket?.fliteTicketId),
+    mappedUrn: mappedUrn(desired.companyId, connectionId, fliteEventId, ticket?.fliteTicketId),
     labels: {
       provider: l.provider,
       env,
@@ -186,15 +196,15 @@ export function registration(
 }
 
 /** Existing mapped resources whose stored `listingId` differs from the desired one (a relabel; never a create). */
-export function relabelRegistrations(desired: DesiredState, env: string, plan: MappingPlan): Registration[] {
+export function relabelRegistrations(desired: DesiredState, env: string, connectionId: string, plan: MappingPlan): Registration[] {
   if (plan.fliteEventId === undefined) return [];
   const out: Registration[] = [];
   if (plan.storedListingId !== desired.labels.listingId) {
-    out.push(registration(desired, env, plan.fliteEventId));
+    out.push(registration(desired, env, connectionId, plan.fliteEventId));
   }
   for (const t of plan.tickets) {
     if (t.fliteTicketId !== undefined && t.storedListingId !== desired.labels.listingId) {
-      out.push(registration(desired, env, plan.fliteEventId, { ticketUrn: t.ticketUrn, fliteTicketId: t.fliteTicketId }));
+      out.push(registration(desired, env, connectionId, plan.fliteEventId, { ticketUrn: t.ticketUrn, fliteTicketId: t.fliteTicketId }));
     }
   }
   return out;

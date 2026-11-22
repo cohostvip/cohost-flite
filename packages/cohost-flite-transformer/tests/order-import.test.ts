@@ -127,7 +127,7 @@ test("every imported order has a stable URN and deferred payment; two runs give 
   const run = () => {
     const jobs = plan({ targets: [mapped("e1", "9")], maxPages: 4 }).jobs;
     const flat = flatten({ jobs, pages: [page([1, 2], 1, true), page([3, 4], 2, true), page([5], 3, false), empty(4)] });
-    return flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: "company_test", env: "sandbox" }));
+    return flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: "company_test", connectionId: "conn_1" }));
   };
   const a = run();
   const b = run();
@@ -136,7 +136,7 @@ test("every imported order has a stable URN and deferred payment; two runs give 
   assert.equal(new Set(a.map((x) => x.context.urn)).size, 5, "one distinct identity per order");
   for (const { order, context } of a) {
     assert.equal(order.paymentMethod, "deferred");
-    assert.match(context.urn, /^urn:1:company_test:flite-sandbox:\/orders\/65f1e00000000000000001\d\d$/);
-    assert.match(String(order.contextId), /:flite-sandbox:\/events\/9$/);
+    assert.match(context.urn, /^urn:1:company_test:conn_1:\/orders\/65f1e00000000000000001\d\d$/);
+    assert.match(String(order.contextId), /:conn_1:\/events\/9$/);
   }
 });
