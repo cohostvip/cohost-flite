@@ -12,6 +12,9 @@ import { amount, API_VERSION, APP_SOURCE, cohostCurrency, fliteMeta, idFrom, par
 export type AnyFliteOrder = FliteOrder | FliteOrderListItem;
 type AnyFliteOrderTicket = FliteOrderTicket | FliteOrderListTicket;
 
+/** Inbound Flite orders are collected by the channel (Flite), so Cohost records them as deferred. */
+export type DeferredCohostOrder = CohostOrder & { paymentMethod: "deferred" };
+
 export interface FliteOrderOptions {
   /** Required for list items, which carry no `eventId`. Detail orders use their own. */
   eventId?: string;
@@ -132,7 +135,7 @@ export function fliteOrderToCohost(
   source: SourceContext,
   order: AnyFliteOrder,
   options: FliteOrderOptions = {},
-): CohostOrder {
+): DeferredCohostOrder {
   const agent = resourceContext(source);
   const eventId = ("eventId" in order && order.eventId) || options.eventId;
   if (!eventId) throw new Error("eventId is required: not found on order and not provided as parameter");
@@ -169,6 +172,7 @@ export function fliteOrderToCohost(
     },
     customer: customer(order.user),
     status: orderStatus(order.status),
+    paymentMethod: "deferred",
     items: tickets.map((t) => orderItem(source, t, eventId, currency, sortingOf.get(t.ticketId)!)),
     agreements: {
       agreedToOrganizerTerms: false,

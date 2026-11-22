@@ -1,12 +1,12 @@
 # Flite sales channel (internal)
 
-A Cohost company-owned, non-public API channel mirrors its events onto Flite. A two-root w6w workflow
-re-reads current Cohost truth on every trigger and reconciles Flite against it. It only ever creates,
+A Cohost company-owned, non-public API channel mirrors its events onto Flite. A three-root w6w workflow
+re-reads current Cohost truth on every trigger and reconciles Flite against it; a third root imports inbound Flite orders (see Orders). It only ever creates,
 updates, stops and reopens; it never deletes anything on Flite.
 
 ## Pipeline
 
-Two roots, both channel-scoped: `channel-event-changed` (channel actions listed / changed / unlisted) and
+Two channel-scoped roots (a third, for orders, is described under Orders): `channel-event-changed` (channel actions listed / changed / unlisted) and
 `channel-ticket-changed` (ticket created / updated / deleted, passed only for events listed on the channel).
 Each takes a `channelId` param, so tickets of unrelated events never start a run. Both feed one `@w6w/race` node
 (payload `meta.{channelId, eventId, companyId, …}`), then:
@@ -19,12 +19,22 @@ Each takes a `channelId` param, so tickets of unrelated events never start a run
 
 Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, tokens or credentials; connections are refs bound at install.
 
+## Orders
+
+A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_mapping` (`resolve-urn`) -> `order_guard` (`@w6w/script`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
+
+- **Deferred payment.** The converter always emits `paymentMethod: "deferred"`, for paid, free and refunded Flite orders alike: Flite collected the money. Amounts stay in cents, with currency, payment date, line items and buyer from the Flite order.
+- **Limitation (verified).** `POST /orders` strips a client-supplied `paymentMethod` (`provenance.ts:19`, `create.ts` `stripProvenance`). So recording the order as deferred on the Cohost side needs a server change. This workflow does not make that change, and nothing here promises it.
+- **Idempotency.** The order URN is `urn:1:<companyId>:flite-<env>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
+- **Mapped-event lookup and channel ownership.** `order_mapping` is `vip.cohost.w6w` `resolve-urn` (connection `cohost`) on the order's event URN (`steps.order_transform.output.order.contextId`), with no `labels` filter and no `type`. It returns that URN's own mapping doc `{urn, labels, resources}`, the doc sync registered for the Flite event. `order_guard` receives `{mapping, expected: {provider: "flite", env, org, channelId}}` (the last three from the workflow variables) and throws `unmapped Flite event: ...` unless `mapping.resources` is a non-empty array **and** every `expected` key equals `mapping.labels[key]`. So an event with no mapping, an empty mapping, or a mapping owned by another channel, env or org fails the run visibly and no order is created. Orders are never imported to a wrong event. `upsert-order` is reachable only through the guard.
+- **Out of scope.** Refunds and cancellations.
+
 ## Behaviour (decisions D1–D7)
 
 - **D1 Channel.** One company-owned, `api`, non-public channel with one primary listing. No new channel type.
 - **D2 Account.** Flite sandbox credentials only, taken from the bound Flite connection. No new env vars. Staging host is `api-staging.fliteapi.city`.
 - **D3 Removal / stop.** Unlist, hide, ended, canceled, draft: the Flite event is ended and its tickets set to unavailable. The Flite id mapping is kept. Re-adding the event reopens the same Flite event and tickets and never creates a second. An owner `started` event stays active (`hold`) only while its listing is present and `visibility === "visible"`.
-- **D4 Remaining stock.** Flite ticket capacity is Cohost capacity − quantity sold − reserved. Cohost has no reservation count, so reserved is 0. `maximumQuantity` is never read. Inbound Flite orders are not tracked.
+- **D4 Remaining stock.** Flite ticket capacity is Cohost capacity − quantity sold − reserved. Cohost has no reservation count, so reserved is 0. `maximumQuantity` is never read. Sold counts come from Cohost; inbound Flite orders are imported by the third root (see Orders).
 - **D5 Dedup.** Flite ids come only from the durable URN mappings (labels `id` / `eventId`), never from name matching. An event mapping suppresses `/create-event-partner`. With several event mappings the lexicographically smallest Flite id is used and a warning is emitted. A ticket mapping is honoured only if its `labels.eventId` equals the chosen event id. Mappings are registered right after creation. Lookup labels are `{provider, env, org, channelId}` (+ `kind`) and never include `listingId`, which changes on remove→re-add. A differing stored `listingId` never causes a create; it re-registers the mapping with the new label.
 - **D6 Multi-trigger.** Both roots normalize to (channel, event) and re-read current state; stale payload content is not used.
 - **D7.** No change to the w6w engine and no Cohost API schema change.
