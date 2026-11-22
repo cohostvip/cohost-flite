@@ -102,7 +102,7 @@ test("flite bundle: actions and network allow-list", async () => {
 
 test("transformer bundle: offline conversions in both directions", async () => {
   const transformer = apps["cohost-flite-transformer"];
-  assert.equal(transformer.app.actions?.length, 7);
+  assert.equal(transformer.app.actions?.length, 9);
   assert.equal(transformer.app.auth, undefined);
   assert.deepEqual(transformer.manifest.network.allow, []);
   const flite = readCapture<{ data: { _id: string; eventName: string } }>("event-1-with-tickets").body.data;

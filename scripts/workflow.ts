@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 type Json = Record<string, any>;
 
 /** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
-export const A_KEYS = ["get-channel-event-snapshot", "register-urn-mappings", "resolve-urn", "upsert-order"] as const;
+export const A_KEYS = ["get-channel-event-snapshot", "list-channel-events", "register-urn-mappings", "resolve-urn", "upsert-order"] as const;
 export const A_TRIGGERS = ["channel-event-changed", "channel-ticket-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
@@ -113,6 +113,7 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
     if (seen.has(report.id)) errs.push("terminal step reachable without passing register");
   }
   validateOrderRoot(wf, nodes, edges, orderTriggers[0], byAction, errs);
+  errs.push(...validateImportRoot(wf, nodes, edges));
   if (typeof wf.id !== "string" || !WF_ID.test(wf.id)) errs.push(`id must match ${WF_ID} (server grammar)`);
   if (typeof wf.key !== "string" || !WF_KEY.test(wf.key)) errs.push("key must be an account slug [a-z0-9-]");
   const text = JSON.stringify(wf);
@@ -178,6 +179,21 @@ function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | 
     if (n.uses.connectionRef !== ref) errs.push(`node ${n.id} must use connectionRef ${ref}`);
     else if (!wf.connections?.[ref]) errs.push(`node ${n.id}: connectionRef ${ref} is not declared in connections`);
   }
+}
+
+/** Ids of the fourth, detached root (manual start -> channel events -> per-event mapping -> paged list-orders -> per-order transform + upsert). Pinned in worklist/T9.md "Design pins". */
+export const IMPORT_ROOT_IDS = [
+  "import_start", "import_list_events", "import_event_ids", "import_each_event", "ev_snapshot", "ev_target", "import_pages",
+  "import_each_page", "page_fetch", "import_flatten", "import_complete", "import_each_order", "imp_transform", "imp_upsert",
+] as const;
+
+/**
+ * Fourth root: detached "import all orders" flow. Returns validation errors.
+ * STUB (T9 S1): checks nothing yet; the real checks (detachment from the other three roots, bindings,
+ * foreach bodies, mapping-label guard, upsert only after the truncation guard) land in a later T9 slice.
+ */
+export function validateImportRoot(_wf: Json, _nodes: Json[], _edges: Json[]): string[] {
+  return [];
 }
 
 /** Writes the channel id literal into every channel trigger node's `with.channelId` (the engine stores trigger params unresolved). The Flite order trigger has no channelId param and is skipped. */
