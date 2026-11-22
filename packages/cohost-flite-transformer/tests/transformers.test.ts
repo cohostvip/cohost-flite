@@ -24,8 +24,10 @@ test("issued tickets without discounts keep a zero discount and their check-in s
 });
 
 test("order transformer preserves money, customer, barcode and source URNs", () => {
-  const result = action.execute({ ...source, order });
-  assert.equal(result.context.urn, "urn:1:company_test:source_test:/orders/order_1");
+  const out = action.execute({ ...source, order });
+  const result = out.data;
+  assert.equal(out.urn, "urn:1:company_test:source_test:/orders/order_1");
+  assert.equal(result.order.urn, out.urn);
   assert.equal(result.order.companyId, source.companyId);
   assert.equal(result.order.contextId, "urn:1:company_test:source_test:/events/event_1");
   assert.equal(result.order.costs.total, "USD,1234");
@@ -81,4 +83,39 @@ test("snapshot and mapping actions are offline and share the same source identit
   assert.equal(objects[0].urn, snapshot.tickets[0].urn);
   assert.equal(snapshotAction.requiresAuth, false);
   assert.equal(mappingsAction.requiresAuth, false);
+});
+
+test("transform-order outputs the full Upsert Order body: order, source and one attendee per ticket", () => {
+  const two = { ...order, tickets: [{ ...order.tickets[0], checkIn: true }, { ...order.tickets[0], barcode: "synthetic-barcode-2", checkIn: false }] };
+  const { data, urn } = action.execute({ ...source, order: two, channelId: " ch_flite " });
+  assert.deepEqual(Object.keys(data).sort(), ["attendees", "order", "source"]);
+  assert.deepEqual(data.source, {
+    system: "flite",
+    externalId: two._id,
+    eventId: two.eventId,
+    urn,
+    changedAt: two.paymentDate || two.created || null,
+    status: two.status ?? null,
+    payload: two,
+  });
+  assert.equal(data.order.context?.channelId, "ch_flite", "the selling channel is recorded on the order");
+  assert.equal(data.order.context?.source, "flite");
+  assert.equal(data.attendees.length, 2);
+  const ids = data.order.items.map((i) => i.id);
+  assert.deepEqual(data.attendees.map((a) => a.orderItemId), ids, "each attendee names its order item");
+  assert.deepEqual(data.attendees.map((a) => a.barcodes), [["synthetic-barcode"], ["synthetic-barcode-2"]]);
+  assert.deepEqual(data.attendees.map((a) => [a.checkedIn, a.status]), [[true, "checkedIn"], [false, "attending"]]);
+  for (const a of data.attendees) assert.match(a.urn, /^urn:1:company_test:source_test:\//);
+});
+
+test("transform-order: no channelId leaves context without a channel; the event comes from the order", () => {
+  const { data } = action.execute({ ...source, order });
+  assert.equal(data.order.context?.channelId, undefined);
+  assert.equal(data.order.contextId, "urn:1:company_test:source_test:/events/event_1");
+  assert.ok(!action.params.some((p) => p.key === "eventId"), "no separate event id field");
+});
+
+test("refunded orders mark every attendee refunded", () => {
+  const { data } = action.execute({ ...source, order: { ...order, status: "refunded" } as FliteOrder });
+  if (data.order.status === "refunded") assert.ok(data.attendees.every((a) => a.status === "refunded"));
 });

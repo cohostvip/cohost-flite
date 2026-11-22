@@ -4,13 +4,14 @@ import pagesAction from "../actions/order-import-pages.ts";
 import type { ImportPageJob, ImportPagesInput, ImportPagesOutput, ImportTarget } from "../actions/order-import-pages.ts";
 import flattenAction from "../actions/order-import-flatten.ts";
 import type { ImportFlattenInput, ImportFlattenOutput, ImportPageResult } from "../actions/order-import-flatten.ts";
+import type { CohostOrderPayload } from "../convert/order.ts";
 import transformOrder from "../actions/transform-order.ts";
 import { readCapture } from "../../../tests/live-fixtures.ts";
 
 const plan = (i: ImportPagesInput) => (pagesAction.execute as (i: ImportPagesInput) => ImportPagesOutput)(i);
 const flatten = (i: ImportFlattenInput) => (flattenAction.execute as (i: ImportFlattenInput) => ImportFlattenOutput)(i);
 const transform = (input: Record<string, unknown>) =>
-  (transformOrder.execute as (i: never) => { order: Record<string, unknown>; context: { urn: string } })(input as never);
+  (transformOrder.execute as (i: never) => { data: CohostOrderPayload; urn: string })(input as never);
 
 const sample = () => readCapture<{ data: { orders: Array<Record<string, unknown>> } }>("event-9-orders-page-1").body.data.orders[0]!;
 const mkOrder = (n: number) => ({ ...structuredClone(sample()), _id: `65f1e00000000000000001${String(n).padStart(2, "0")}` });
@@ -127,16 +128,17 @@ test("every imported order has a stable URN and deferred payment; two runs give 
   const run = () => {
     const jobs = plan({ targets: [mapped("e1", "9")], maxPages: 4 }).jobs;
     const flat = flatten({ jobs, pages: [page([1, 2], 1, true), page([3, 4], 2, true), page([5], 3, false), empty(4)] });
-    return flat.items.map((it) => transform({ order: it.order, eventId: it.eventId, companyId: "company_test", connectionId: "conn_1" }));
+    return flat.items.map((it) => transform({ order: it.order, companyId: "company_test", connectionId: "conn_1" }));
   };
   const a = run();
   const b = run();
   assert.equal(a.length, 5);
-  assert.deepEqual(a.map((x) => x.context.urn), b.map((x) => x.context.urn));
-  assert.equal(new Set(a.map((x) => x.context.urn)).size, 5, "one distinct identity per order");
-  for (const { order, context } of a) {
+  assert.deepEqual(a.map((x) => x.urn), b.map((x) => x.urn));
+  assert.equal(new Set(a.map((x) => x.urn)).size, 5, "one distinct identity per order");
+  for (const { data: { order, source }, urn } of a) {
     assert.equal(order.paymentMethod, "deferred");
-    assert.match(context.urn, /^urn:1:company_test:conn_1:\/orders\/65f1e00000000000000001\d\d$/);
+    assert.equal(source.eventId, "9", "flatten stamped the Flite event id on the list order");
+    assert.match(urn, /^urn:1:company_test:conn_1:\/orders\/65f1e00000000000000001\d\d$/);
     assert.match(String(order.contextId), /:conn_1:\/events\/9$/);
   }
 });

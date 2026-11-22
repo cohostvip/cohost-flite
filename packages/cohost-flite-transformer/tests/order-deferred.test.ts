@@ -2,6 +2,7 @@ import { sourceParams } from "../lib/context.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fliteOrderToCohost } from "../convert/order.ts";
+import type { CohostOrderPayload } from "../convert/order.ts";
 import transformOrder from "../actions/transform-order.ts";
 import { source } from "../../../tests/fixtures.ts";
 import { readCapture } from "../../../tests/live-fixtures.ts";
@@ -15,7 +16,7 @@ const paid = (): FliteOrder => {
   return o;
 };
 const run = (input: Record<string, unknown>) =>
-  (transformOrder.execute as (i: never) => { order: Record<string, unknown>; context: { urn: string } })(input as never);
+  (transformOrder.execute as (i: never) => { data: CohostOrderPayload; urn: string })(input as never);
 
 test("paid order is deferred with cents totals, paymentDate, items and URNs", () => {
   const o = paid();
@@ -49,12 +50,14 @@ test("refunded order stays refunded but deferred", () => {
 
 test("transform-order requires connectionId and uses it as the URN source segment", () => {
   const { connectionId: _c, ...rest } = source;
-  assert.throws(() => run({ ...rest, env: "sandbox", order: paid() }), /connectionId/);
-  const { order, context } = run({ ...source, order: paid() });
+  assert.throws(() => run({ ...rest, order: paid() }), /connectionId/);
+  assert.throws(() => run({ ...source, connectionId: "", order: paid() }), /connectionId/, "no connection, no transform");
+  const { data: { order, source: src }, urn } = run({ ...source, order: paid() });
   assert.equal(order.paymentMethod, "deferred");
-  assert.match(context.urn, new RegExp(`:${source.connectionId}:/orders/`));
+  assert.match(urn, new RegExp(`:${source.connectionId}:/orders/`));
   assert.match(String(order.contextId), new RegExp(`:${source.connectionId}:/events/`));
-  assert.equal(order.urn, context.urn);
+  assert.equal(order.urn, urn);
+  assert.equal(src.urn, urn);
 });
 
 test("sourceParams: companyId is hidden and defaults to const.account_id", () => {

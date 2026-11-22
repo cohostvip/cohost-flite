@@ -9,9 +9,9 @@ export interface ImportPageResult {
 }
 
 export interface ImportOrderItem {
-  /** Flite list order, passed to `transform-order` as `order`. */
+  /** Flite list order, passed to `transform-order` as `order`; stamped with its `eventId` (list orders carry none). */
   order: unknown;
-  /** Flite event id, passed to `transform-order` as `eventId` (list orders carry none). */
+  /** Flite event id. */
   eventId: string;
   cohostEventId: string;
 }
@@ -79,7 +79,9 @@ export default {
         const dedupe = `${key}\u0000${id}`;
         if (seen.has(dedupe)) continue;
         seen.add(dedupe);
-        items.push({ order, eventId: job.eventId, cohostEventId: job.cohostEventId });
+        // List orders carry no eventId; stamp it so transform-order needs no separate event field.
+        const stamped = (order as { eventId?: unknown }).eventId ? order : { ...(order as object), eventId: job.eventId };
+        items.push({ order: stamped, eventId: job.eventId, cohostEventId: job.cohostEventId });
       }
     });
     // The last fetched page of an event must be the end; anything else means the page cap cut it off.

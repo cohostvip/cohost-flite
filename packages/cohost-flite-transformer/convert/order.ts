@@ -18,6 +18,40 @@ export type DeferredCohostOrder = CohostOrder & { paymentMethod: "deferred" };
 export interface FliteOrderOptions {
   /** Required for list items, which carry no `eventId`. Detail orders use their own. */
   eventId?: string;
+  /** The Cohost sales channel that sold the order (Flite is a channel), recorded as `context.channelId`. */
+  channelId?: string;
+}
+
+/** The `source` block of `POST /v1/orders`: Flite is the system of record, keyed by its order id. */
+export interface CohostOrderSource {
+  system: "flite";
+  externalId: string;
+  eventId: string | null;
+  urn: string;
+  changedAt: string | null;
+  status: string | null;
+  payload: unknown;
+}
+
+/** One ticket holder, as `POST /v1/orders` takes it in its top-level `attendees`. */
+export interface CohostOrderAttendee {
+  /** The order item (one per Flite ticket, keyed by its barcode). */
+  orderItemId: string;
+  index: number;
+  urn: string;
+  /** Flite tickets carry no holder details: `null` makes Cohost use the buyer. */
+  profile: null;
+  barcodes: string[];
+  checkedIn: boolean;
+  status: "attending" | "checkedIn" | "cancelled" | "refunded";
+}
+
+/** The body of `POST /v1/orders` (Upsert Order's `data`): `{ order, source, attendees }`. */
+export interface CohostOrderPayload {
+  /** The converted order without `id`: Upsert Order keys it by `order.urn`. */
+  order: Omit<DeferredCohostOrder, "id">;
+  source: CohostOrderSource;
+  attendees: CohostOrderAttendee[];
 }
 
 export function orderStatus(status: string): CohostOrderStatus {
@@ -211,11 +245,60 @@ export function fliteOrderToCohost(
         ...(list?.refundDate ? { refundDate: list.refundDate } : {}),
       },
     },
-    context: { source: APP_SOURCE },
+    context: { source: APP_SOURCE, ...(options.channelId ? { channelId: options.channelId } : {}) },
     uid: null,
     created: order.created,
     changed: order.created,
     version: API_VERSION,
+  };
+}
+
+/** Flite's own last change: a refund, else the payment, else the creation. */
+function changedAt(order: AnyFliteOrder): string | null {
+  const list = "refundDate" in order ? order.refundDate : undefined;
+  const paid = "paymentDate" in order ? order.paymentDate : undefined;
+  return list || paid || order.created || null;
+}
+
+/**
+ * Flite order → the full Upsert Order body: the converted order, its `source` (system of record,
+ * external id, event, URN, status, raw payload) and one attendee per issued ticket (barcode,
+ * check-in, status). Without `source` Cohost cannot tell where the order came from.
+ */
+export function fliteOrderToCohostPayload(
+  source: SourceContext,
+  order: AnyFliteOrder,
+  options: FliteOrderOptions = {},
+): CohostOrderPayload {
+  const cohost = fliteOrderToCohost(source, order, options);
+  const fliteEventId = (cohost.meta?.flite as { eventId?: string } | undefined)?.eventId ?? null;
+  const closed = cohost.status === "refunded" ? "refunded" : cohost.status === "voided" ? "cancelled" : null;
+  const attendees = cohost.items.map((item): CohostOrderAttendee => {
+    const held = item.meta?.attendees?.[0];
+    const checkedIn = held?.checkedIn === true;
+    return {
+      orderItemId: item.id!,
+      index: 0,
+      urn: String(held?.urn ?? item.meta!.urn),
+      profile: null,
+      barcodes: item.meta?.barcodes ?? [],
+      checkedIn,
+      status: closed ?? (checkedIn ? "checkedIn" : "attending"),
+    };
+  });
+  const { id: _id, ...upsertable } = cohost;
+  return {
+    order: upsertable,
+    source: {
+      system: APP_SOURCE,
+      externalId: order._id,
+      eventId: fliteEventId,
+      urn: cohost.urn!,
+      changedAt: changedAt(order),
+      status: order.status ?? null,
+      payload: structuredClone(order),
+    },
+    attendees,
   };
 }
 
