@@ -94,24 +94,25 @@
     },
     {
       "id": "order_mapping",
-      "uses": { "app": "vip.cohost.w6w", "action": "find-mapped-resources", "connectionRef": "cohost" },
+      "uses": { "app": "vip.cohost.w6w", "action": "resolve-urn", "connectionRef": "cohost" },
       "with": {
-        "urn": { "$": "steps.order_transform.output.order.contextId" },
-        "labels": {
-          "provider": "flite",
-          "env": { "$": "vars.env" },
-          "org": { "$": "vars.org" },
-          "channelId": { "$": "vars.channelId" },
-          "kind": "event"
-        }
+        "urn": { "$": "steps.order_transform.output.order.contextId" }
       }
     },
     {
       "id": "order_guard",
       "uses": { "app": "@w6w/script", "action": "run" },
       "with": {
-        "code": "if (!Array.isArray(input) || input.length === 0) { throw new Error('unmapped Flite event: no URN mapping from this channel for the order event; order not imported'); } return { ok: true };",
-        "input": { "$": "steps.order_mapping.output.results" }
+        "code": "var m = input && input.mapping; var exp = (input && input.expected) || {}; var keys = Object.keys(exp); if (keys.length === 0) { throw new Error('unmapped Flite event: no expected channel labels supplied; order not imported'); } if (!m || typeof m !== 'object' || !Array.isArray(m.resources) || m.resources.length === 0) { throw new Error('unmapped Flite event: no URN mapping for the order event; order not imported'); } var labels = m.labels || {}; for (var i = 0; i < keys.length; i++) { var k = keys[i]; if (typeof exp[k] !== 'string' || exp[k] === '' || labels[k] !== exp[k]) { throw new Error('unmapped Flite event: mapping is not owned by this channel (label ' + k + ' is ' + JSON.stringify(labels[k]) + ', expected ' + JSON.stringify(exp[k]) + '); order not imported'); } } return { ok: true };",
+        "input": {
+          "mapping": { "$": "steps.order_mapping.output" },
+          "expected": {
+            "provider": "flite",
+            "env": { "$": "vars.env" },
+            "org": { "$": "vars.org" },
+            "channelId": { "$": "vars.channelId" }
+          }
+        }
       }
     },
     {

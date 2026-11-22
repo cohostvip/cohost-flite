@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 type Json = Record<string, any>;
 
 /** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
-export const A_KEYS = ["get-channel-event-snapshot", "register-urn-mappings", "find-mapped-resources", "upsert-order"] as const;
+export const A_KEYS = ["get-channel-event-snapshot", "register-urn-mappings", "resolve-urn", "upsert-order"] as const;
 export const A_TRIGGERS = ["channel-event-changed", "channel-ticket-changed"] as const;
 const APP_A = "vip.cohost.w6w";
 const APP_F = "vip.cohost.flite";
@@ -127,10 +127,10 @@ export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; tr
 /** Third root: Flite order-placed -> transform-order -> mapped-event lookup -> guard -> upsert-order. */
 function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | undefined, byAction: (app: string, action: string) => Json | undefined, errs: string[]): void {
   const xform = byAction(APP_X, "transform-order");
-  const mapping = byAction(APP_A, "find-mapped-resources");
+  const mapping = byAction(APP_A, "resolve-urn");
   const upsert = byAction(APP_A, "upsert-order");
   const guard = nodes.find((n) => n.id === "order_guard" && n.uses?.app === "@w6w/script");
-  for (const [name, n] of [["order trigger", trig], ["transform-order", xform], ["find-mapped-resources", mapping], ["order_guard script", guard], ["upsert-order", upsert]] as const) {
+  for (const [name, n] of [["order trigger", trig], ["transform-order", xform], ["resolve-urn", mapping], ["order_guard script", guard], ["upsert-order", upsert]] as const) {
     if (!n) errs.push(`missing order-root step ${name}`);
   }
   if (!trig || !xform || !mapping || !guard || !upsert) return;
@@ -159,12 +159,16 @@ function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | 
   if (!bound(w(xform).companyId, "vars.companyId")) errs.push("transform-order.companyId must be bound to vars.companyId");
   if (!bound(w(xform).env, "vars.env")) errs.push("transform-order.env must be bound to vars.env");
   if (!(wf.variables as Json[] | undefined)?.some((v) => v.key === "companyId" && v.required === true)) errs.push("variable companyId (required) is missing");
-  if (!bound(w(mapping).urn, `steps.${xform.id}.output.order.contextId`)) errs.push(`find-mapped-resources.urn must be bound to steps.${xform.id}.output.order.contextId`);
-  const ml = w(mapping).labels ?? {};
-  if (Object.keys(ml).sort().join() !== "channelId,env,kind,org,provider" || ml.provider !== "flite" || ml.kind !== "event") errs.push("order mapping labels must be exactly {provider:flite, env, org, channelId, kind:event}");
-  for (const k of ["env", "org", "channelId"]) if (!bound(ml[k], `vars.${k}`)) errs.push(`order mapping labels.${k} must be bound to vars.${k}`);
-  if (!bound(w(guard).input, `steps.${mapping.id}.output.results`)) errs.push(`order guard input must be bound to steps.${mapping.id}.output.results`);
-  if (!/throw\b/.test(String(w(guard).code ?? "")) || !/Array\.isArray/.test(String(w(guard).code ?? ""))) errs.push("order guard code must throw unless results is a non-empty array");
+  if (!bound(w(mapping).urn, `steps.${xform.id}.output.order.contextId`)) errs.push(`resolve-urn.urn must be bound to steps.${xform.id}.output.order.contextId`);
+  // resolve-urn returns the URN's own mapping doc; it must not be narrowed by a labels/type filter (the guard verifies ownership instead)
+  for (const k of Object.keys(w(mapping))) if (k !== "urn") errs.push(`resolve-urn must take only urn (found ${k}); ownership is verified by the guard`);
+  const gi = w(guard).input ?? {};
+  if (!bound(gi.mapping, `steps.${mapping.id}.output`)) errs.push(`order guard input.mapping must be bound to steps.${mapping.id}.output`);
+  const ex = gi.expected ?? {};
+  if (Object.keys(ex).sort().join() !== "channelId,env,org,provider" || ex.provider !== "flite") errs.push("order guard input.expected must be exactly {provider:flite, env, org, channelId}");
+  for (const k of ["env", "org", "channelId"]) if (!bound(ex[k], `vars.${k}`)) errs.push(`order guard input.expected.${k} must be bound to vars.${k}`);
+  const gcode = String(w(guard).code ?? "");
+  if (!/throw\b/.test(gcode) || !/Array\.isArray/.test(gcode) || !/resources/.test(gcode) || !/labels/.test(gcode)) errs.push("order guard code must throw unless mapping.resources is a non-empty array and mapping.labels match expected");
   if (!bound(w(upsert).data?.order, `steps.${xform.id}.output.order`)) errs.push(`upsert-order.data.order must be bound to steps.${xform.id}.output.order`);
   if (!(upsert.retry?.maxAttempts >= 3)) errs.push("upsert-order step needs retry.maxAttempts >= 3");
   if (edges.some((e) => e.from === upsert.id)) errs.push("upsert-order must have no outgoing edge");

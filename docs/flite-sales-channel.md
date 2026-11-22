@@ -21,12 +21,12 @@ Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, t
 
 ## Orders
 
-A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_mapping` (`find-mapped-resources`) -> `order_guard` (`@w6w/script`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
+A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_mapping` (`resolve-urn`) -> `order_guard` (`@w6w/script`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
 
 - **Deferred payment.** The converter always emits `paymentMethod: "deferred"`, for paid, free and refunded Flite orders alike: Flite collected the money. Amounts stay in cents, with currency, payment date, line items and buyer from the Flite order.
 - **Limitation (verified).** `POST /orders` strips a client-supplied `paymentMethod` (`provenance.ts:19`, `create.ts` `stripProvenance`). So recording the order as deferred on the Cohost side needs a server change. This workflow does not make that change, and nothing here promises it.
 - **Idempotency.** The order URN is `urn:1:<companyId>:flite-<env>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
-- **Unmapped events.** `order_mapping` looks up the Flite event URN, with labels that include `channelId`. If nothing maps, `order_guard` throws `unmapped Flite event: ...`. The run fails visibly and no order is created. Orders are never imported to a wrong event. `upsert-order` is reachable only through the guard.
+- **Mapped-event lookup and channel ownership.** `order_mapping` is `vip.cohost.w6w` `resolve-urn` (connection `cohost`) on the order's event URN (`steps.order_transform.output.order.contextId`), with no `labels` filter and no `type`. It returns that URN's own mapping doc `{urn, labels, resources}`, the doc sync registered for the Flite event. `order_guard` receives `{mapping, expected: {provider: "flite", env, org, channelId}}` (the last three from the workflow variables) and throws `unmapped Flite event: ...` unless `mapping.resources` is a non-empty array **and** every `expected` key equals `mapping.labels[key]`. So an event with no mapping, an empty mapping, or a mapping owned by another channel, env or org fails the run visibly and no order is created. Orders are never imported to a wrong event. `upsert-order` is reachable only through the guard.
 - **Out of scope.** Refunds and cancellations.
 
 ## Behaviour (decisions D1–D7)

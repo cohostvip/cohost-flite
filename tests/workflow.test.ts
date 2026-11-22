@@ -238,8 +238,16 @@ const orderMutations: Array<[string, (wf: any) => void, RegExp]> = [
   ["upsert replaced by a non-upsert action", (wf) => { node(wf, "order_upsert").uses.action = "create-order"; }, /unknown vip\.cohost\.w6w action|missing order-root step upsert-order/],
   ["companyId variable missing", (wf) => { wf.variables = wf.variables.filter((v: any) => v.key !== "companyId"); }, /variable companyId/],
   ["transform companyId literal", (wf) => { node(wf, "order_transform").with.companyId = "co1"; }, /companyId must be bound to vars\.companyId/],
-  ["mapping urn from wrong place", (wf) => { node(wf, "order_mapping").with.urn = { $: "steps.order_placed.output.orderId" }; }, /find-mapped-resources\.urn/],
-  ["mapping labels missing kind", (wf) => { delete node(wf, "order_mapping").with.labels.kind; }, /order mapping labels/],
+  ["mapping urn from wrong place", (wf) => { node(wf, "order_mapping").with.urn = { $: "steps.order_placed.output.orderId" }; }, /resolve-urn\.urn/],
+  ["mapping narrowed by a labels filter", (wf) => { node(wf, "order_mapping").with.labels = { provider: "flite" }; }, /resolve-urn must take only urn \(found labels\)/],
+  ["mapping narrowed by a type filter", (wf) => { node(wf, "order_mapping").with.type = "system-resource"; }, /resolve-urn must take only urn \(found type\)/],
+  ["mapping back to find-mapped-resources", (wf) => { node(wf, "order_mapping").uses.action = "find-mapped-resources"; }, /unknown vip\.cohost\.w6w action|missing order-root step resolve-urn/],
+  ["guard expected missing", (wf) => { delete node(wf, "order_guard").with.input.expected; }, /input\.expected must be exactly/],
+  ["guard expected lacks channelId", (wf) => { delete node(wf, "order_guard").with.input.expected.channelId; }, /input\.expected must be exactly/],
+  ["guard expected lacks env", (wf) => { delete node(wf, "order_guard").with.input.expected.env; }, /input\.expected must be exactly/],
+  ["guard expected org literal", (wf) => { node(wf, "order_guard").with.input.expected.org = "o"; }, /expected\.org must be bound to vars\.org/],
+  ["guard expected provider wrong", (wf) => { node(wf, "order_guard").with.input.expected.provider = "other"; }, /input\.expected must be exactly/],
+  ["guard mapping unbound", (wf) => { node(wf, "order_guard").with.input.mapping = { $: "steps.order_transform.output" }; }, /input\.mapping must be bound/],
   ["guard does not throw", (wf) => { node(wf, "order_guard").with.code = "return { ok: true };"; }, /order guard code must throw/],
   ["guard input wrong", (wf) => { node(wf, "order_guard").with.input = { $: "steps.order_transform.output" }; }, /order guard input/],
   ["upsert data from raw order", (wf) => { node(wf, "order_upsert").with.data.order = { $: "steps.order_placed.output.order" }; }, /upsert-order\.data\.order/],
@@ -272,7 +280,7 @@ test("install --apply binds companyId and connections on the order-root nodes; o
   }
   for (const id of ["channel_changed", "channel_ticket_changed"]) assert.equal(node(sent, id).with.channelId, "ch_X");
   assert.equal(node(sent, "order_placed").with, undefined, "order trigger gets no channelId");
-  assert.equal(node(sent, "order_mapping").with.labels.channelId.$, "vars.channelId", "mapping labels stay variable refs");
+  assert.equal(node(sent, "order_guard").with.input.expected.channelId.$, "vars.channelId", "guard expected labels stay variable refs");
   const bad = mkIo();
   assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "bogus=1"], bad.io), 1);
 });
@@ -280,12 +288,52 @@ test("install --apply binds companyId and connections on the order-root nodes; o
 // Executes the shipped guard code the way the script action does: the code body is a function body with `input` in scope.
 const runGuard = (input: unknown) => new Function("input", String(node(load(), "order_guard").with.code))(input);
 
-test("guard: unmapped Flite event throws; one mapped result passes", () => {
-  for (const bad of [[], undefined, null, {}, "x", 0, { length: 1 }]) {
-    assert.throws(() => runGuard(bad), /unmapped Flite event/, `input ${JSON.stringify(bad)}`);
+const EXPECTED = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1" };
+const COMPANY = "co1";
+/** The mapping doc exactly as register-urn-mapping / sync registers an event: labels carry provider/env/org/channelId/listingId/kind/id/eventId; resources = [{...labels, urn: mappedUrn}, {urn: cohost event}]. */
+function mappingDoc(over: Record<string, unknown> = {}) {
+  const mappedUrn = `urn:1:${COMPANY}:flite-sandbox:/events/9`;
+  const labels = { provider: "flite", env: "sandbox", org: "o1", channelId: "ch1", listingId: "l1", kind: "event", id: "9", eventId: "9", ...over };
+  return { urn: mappedUrn, labels, resources: [{ ...labels, urn: mappedUrn }, { urn: `urn:1:${COMPANY}:cohost-falcon:/events/evt_1` }] };
+}
+
+test("guard: a mapping registered by this channel passes", () => {
+  assert.deepEqual(runGuard({ mapping: mappingDoc(), expected: EXPECTED }), { ok: true });
+});
+
+test("guard: unmapped / foreign mappings throw 'unmapped Flite event'", () => {
+  const cases: Array<[string, unknown]> = [
+    ["undefined mapping", undefined],
+    ["null mapping", null],
+    ["empty resources", { ...mappingDoc(), resources: [] }],
+    ["resources not an array", { ...mappingDoc(), resources: { 0: { urn: "x" } } }],
+    ["no resources key", { urn: "u", labels: mappingDoc().labels }],
+    ["missing labels", { urn: "u", resources: mappingDoc().resources }],
+    ["empty labels", { ...mappingDoc(), labels: {} }],
+    ["different channelId", mappingDoc({ channelId: "ch2" })],
+    ["different env", mappingDoc({ env: "production" })],
+    ["different org", mappingDoc({ org: "o2" })],
+    ["different provider", mappingDoc({ provider: "eventbrite" })],
+    ["label removed (channelId)", mappingDoc({ channelId: undefined })],
+  ];
+  for (const [name, mapping] of cases) {
+    assert.throws(() => runGuard({ mapping, expected: EXPECTED }), /unmapped Flite event/, name);
   }
-  assert.deepEqual(runGuard([{ urn: "urn:1:co:flite-sandbox:/events/e1", labels: { provider: "flite" } }]), { ok: true });
-  assert.deepEqual(runGuard([{ a: 1 }, { b: 2 }]), { ok: true });
+  assert.throws(() => runGuard(undefined), /unmapped Flite event/, "no input at all");
+  assert.throws(() => runGuard({ mapping: mappingDoc() }), /unmapped Flite event/, "no expected labels supplied fails closed");
+  assert.throws(() => runGuard({ mapping: mappingDoc(), expected: { ...EXPECTED, channelId: undefined } }), /unmapped Flite event/, "unset expected var fails closed");
+});
+
+test("order root uses resolve-urn (no labels/type filter), not find-mapped-resources", () => {
+  const wf = load();
+  const order = wf.nodes.filter((n: any) => ORDER_CHAIN.includes(n.id));
+  assert.ok(!order.some((n: any) => n.uses.action === "find-mapped-resources"));
+  assert.ok(!JSON.stringify(order).includes("find-mapped-resources"));
+  const m = node(wf, "order_mapping");
+  assert.deepEqual([m.uses.app, m.uses.action, m.uses.connectionRef], ["vip.cohost.w6w", "resolve-urn", "cohost"]);
+  assert.deepEqual(Object.keys(m.with), ["urn"], "no labels filter and no type param");
+  assert.deepEqual(m.with.urn, { $: "steps.order_transform.output.order.contextId" });
+  assert.deepEqual(node(wf, "order_guard").with.input.mapping, { $: "steps.order_mapping.output" });
 });
 
 test("order expressions: transform reads the trigger order; upsert reads the transformed order; mapping reads the transformed contextId", () => {
@@ -301,8 +349,10 @@ test("order expressions: transform reads the trigger order; upsert reads the tra
   assert.deepEqual(t, { order: { _id: "o1" }, companyId: "co1", env: "sandbox" });
   assert.equal(node(wf, "order_transform").with.order.$, "steps.order_placed.output.order");
   const m = resolve(node(wf, "order_mapping").with, ctx);
-  assert.equal(m.urn, "urn:1:co1:flite-sandbox:/events/e1");
-  assert.deepEqual(m.labels, { provider: "flite", env: "sandbox", org: "o", channelId: "ch1", kind: "event" });
+  assert.deepEqual(m, { urn: "urn:1:co1:flite-sandbox:/events/e1" });
+  const doc = mappingDoc();
+  const g = resolve(node(wf, "order_guard").with, { ...ctx, steps: { ...ctx.steps, order_mapping: { output: doc } } });
+  assert.deepEqual(g.input, { mapping: doc, expected: { provider: "flite", env: "sandbox", org: "o", channelId: "ch1" } });
   assert.equal(node(wf, "order_upsert").with.data.order.$, "steps.order_transform.output.order");
   assert.deepEqual(resolve(node(wf, "order_upsert").with, ctx).data, { order: ctx.steps.order_transform.output.order });
 });
