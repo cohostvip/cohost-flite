@@ -1,0 +1,227 @@
+{
+  "manifestVersion": "2",
+  "id": "wf_flite-sales-channel",
+  "key": "flite-sales-channel",
+  "name": "Flite sales channel",
+  "description": "Publishes, updates and stops Cohost channel events on Flite, and imports Flite orders into Cohost as deferred-payment orders. Connections are bound at install.",
+  "trigger": { "type": "manual" },
+  "variables": [
+    { "key": "channelId", "type": "string", "required": true },
+    { "key": "env", "type": "string", "required": true },
+    { "key": "org", "type": "string", "required": true }
+  ],
+  "connections": {
+    "cohost": { "app": "vip.cohost.w6w", "connection": null },
+    "flite": { "app": "vip.cohost.flite", "connection": null }
+  },
+  "nodes": [
+    {
+      "id": "channel_changed",
+      "uses": { "app": "vip.cohost.w6w", "action": "channel-changed", "trigger": true, "connectionRef": "cohost" },
+      "with": { "channelId": { "$": "vars.channelId" }, "actions": ["event.change", "ticket.change"] }
+    },
+    {
+      "id": "snapshot",
+      "uses": { "app": "vip.cohost.w6w", "action": "get-channel-event-snapshot", "connectionRef": "cohost" },
+      "with": {
+        "channelId": { "$": "vars.channelId" },
+        "eventId": { "$": "steps.channel_changed.output.meta.eventId" },
+        "companyId": { "$": "steps.channel_changed.output.meta.companyId" },
+        "listingId": { "$": "steps.channel_changed.output.meta.listingId" },
+        "mappingLabels": {
+          "provider": "flite",
+          "env": { "$": "vars.env" },
+          "org": { "$": "vars.org" },
+          "channelId": { "$": "vars.channelId" }
+        }
+      }
+    },
+    {
+      "id": "desired",
+      "uses": { "app": "vip.cohost.transformers.flite", "action": "channel-event-to-flite" },
+      "with": {
+        "snapshot": { "$": "steps.snapshot.output" },
+        "env": { "$": "vars.env" },
+        "org": { "$": "vars.org" }
+      }
+    },
+    {
+      "id": "sync",
+      "uses": { "app": "vip.cohost.flite", "action": "sync-event", "connectionRef": "flite" },
+      "with": {
+        "desired": { "$": "steps.desired.output.desired" },
+        "expectedEnv": { "$": "vars.env" }
+      }
+    },
+    {
+      "id": "register",
+      "uses": { "app": "vip.cohost.w6w", "action": "register-urn-mappings", "connectionRef": "cohost" },
+      "with": { "mappings": { "$": "steps.sync.output.registrations" } },
+      "retry": { "maxAttempts": 3, "backoff": "exponential", "delayMs": 1000 }
+    },
+    {
+      "id": "report",
+      "uses": { "app": "@w6w/script", "action": "run" },
+      "with": {
+        "code": "if (Array.isArray(input) && input.length > 0) { throw new Error('sync-event reported ' + input.length + ' error(s): ' + JSON.stringify(input)); } return { ok: true };",
+        "input": { "$": "steps.sync.output.errors" }
+      }
+    },
+    {
+      "id": "order_placed",
+      "uses": { "app": "vip.cohost.flite", "action": "order-placed", "trigger": true, "connectionRef": "flite" }
+    },
+    {
+      "id": "order_transform",
+      "uses": { "app": "vip.cohost.transformers.flite", "action": "transform-order" },
+      "with": {
+        "order": { "$": "steps.order_placed.output.order" },
+        "connectionId": { "$": "steps.order_placed.meta.connectionId" }
+      }
+    },
+    {
+      "id": "order_upsert",
+      "uses": { "app": "vip.cohost.w6w", "action": "upsert-order", "connectionRef": "cohost" },
+      "with": { "data": { "order": { "$": "steps.order_transform.output.order" } } },
+      "retry": { "maxAttempts": 3, "backoff": "exponential", "delayMs": 1000 }
+    },
+    {
+      "id": "import_start",
+      "uses": {"app": "@w6w/trigger", "action": "manual"}
+    },
+    {
+      "id": "import_conn",
+      "uses": {"app": "vip.cohost.flite", "action": "list-events", "connectionRef": "flite"},
+      "with": {"limit": 1}
+    },
+    {
+      "id": "import_list_events",
+      "uses": {"app": "vip.cohost.w6w", "action": "list-channel-events", "connectionRef": "cohost"},
+      "with": {
+        "channelId": {"$": "vars.channelId"},
+        "limit": 100
+      }
+    },
+    {
+      "id": "import_event_ids",
+      "uses": {"app": "@w6w/script", "action": "run"},
+      "with": {
+        "code": "var ev = input && input.eventId; if (typeof ev === 'string' && ev !== '') { return { eventIds: [ev] }; } var res = (input && input.results) || []; var total = input && input.total; if (typeof total === 'number' && total > res.length) { throw new Error('channel lists ' + total + ' events but only ' + res.length + ' were returned; import not started'); } return { eventIds: res.map(function (r) { return r.id; }) };",
+        "input": {"results": {"$": "steps.import_list_events.output.results"}, "total": {"$": "steps.import_list_events.output.total"}}
+      }
+    },
+    {
+      "id": "import_each_event",
+      "uses": {"app": "@w6w/control", "action": "foreach"},
+      "with": {
+        "items": {"$": "steps.import_event_ids.output.eventIds"},
+        "body": ["ev_snapshot", "ev_target"]
+      }
+    },
+    {
+      "id": "ev_snapshot",
+      "uses": {"app": "vip.cohost.w6w", "action": "get-channel-event-snapshot", "connectionRef": "cohost"},
+      "with": {
+        "channelId": {"$": "vars.channelId"},
+        "eventId": {"$": "foreach.item"},
+        "companyId": {"$": "const.account_id"},
+        "mappingLabels": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}
+      }
+    },
+    {
+      "id": "ev_target",
+      "uses": {"app": "@w6w/script", "action": "run"},
+      "with": {
+        "code": "var id = input.eventId; var ms = Array.isArray(input.mappings) ? input.mappings : []; var exp = input.expected || {}; var keys = Object.keys(exp); var prefix = 'urn:1:' + input.companyId + ':'; var hits = []; for (var i = 0; i < ms.length; i++) { var m = ms[i] || {}; var u = m.mappedUrn || m.urn; var l = m.labels || {}; var ok = false; var id2 = null; if (typeof u === 'string' && u.indexOf(prefix) === 0) { var rest = u.slice(prefix.length); var ci = rest.indexOf(':/events/'); if (ci > 0 && rest.indexOf(':') === ci) { id2 = rest.slice(ci + 9); ok = id2.length > 0 && id2.indexOf('/') === -1; } } for (var k = 0; ok && k < keys.length; k++) { if (typeof exp[keys[k]] !== 'string' || exp[keys[k]] === '' || l[keys[k]] !== exp[keys[k]]) ok = false; } if (ok) hits.push(id2); } if (keys.length === 0) { return { cohostEventId: id, mapped: false, reason: 'no expected channel labels supplied' }; } if (hits.length === 0) { return { cohostEventId: id, mapped: false, reason: 'unmapped: no Flite event mapped to this event by this channel' }; } if (hits.length > 1) { return { cohostEventId: id, mapped: false, reason: 'ambiguous: ' + hits.length + ' Flite events mapped by this channel' }; } return { cohostEventId: id, mapped: true, fliteEventId: hits[0] };",
+        "input": {"eventId": {"$": "foreach.item"}, "mappings": {"$": "steps.ev_snapshot.output.mappings.event"}, "companyId": {"$": "const.account_id"}, "expected": {"provider": "flite", "env": {"$": "vars.env"}, "org": {"$": "vars.org"}, "channelId": {"$": "vars.channelId"}}}
+      }
+    },
+    {
+      "id": "import_pages",
+      "uses": {"app": "vip.cohost.transformers.flite", "action": "order-import-pages"},
+      "with": {
+        "targets": {"$": "steps.import_each_event.output.items"},
+        "maxPages": 10
+      }
+    },
+    {
+      "id": "import_each_page",
+      "uses": {"app": "@w6w/control", "action": "foreach"},
+      "with": {
+        "items": {"$": "steps.import_pages.output.jobs"},
+        "body": ["page_fetch"]
+      }
+    },
+    {
+      "id": "page_fetch",
+      "uses": {"app": "vip.cohost.flite", "action": "list-orders", "connectionRef": "flite"},
+      "with": {
+        "eventId": {"$": "foreach.item.eventId"},
+        "page": {"$": "foreach.item.page"}
+      },
+      "retry": {"maxAttempts": 3, "backoff": "exponential", "delayMs": 1000}
+    },
+    {
+      "id": "import_flatten",
+      "uses": {"app": "vip.cohost.transformers.flite", "action": "order-import-flatten"},
+      "with": {
+        "jobs": {"$": "steps.import_pages.output.jobs"},
+        "pages": {"$": "steps.import_each_page.output.items"},
+        "skipped": {"$": "steps.import_pages.output.skipped"}
+      }
+    },
+    {
+      "id": "import_complete",
+      "uses": {"app": "@w6w/script", "action": "run"},
+      "with": {
+        "code": "var t = (input && input.truncated) || []; if (t.length > 0) { throw new Error('order import truncated by the page cap for ' + t.length + ' event(s): ' + JSON.stringify(t) + '; raise importMaxPages; nothing imported'); } return { ok: true, count: input.count, skipped: input.skipped || [] };",
+        "input": {"truncated": {"$": "steps.import_flatten.output.truncated"}, "skipped": {"$": "steps.import_flatten.output.skipped"}, "count": {"$": "steps.import_flatten.output.count"}}
+      }
+    },
+    {
+      "id": "import_each_order",
+      "uses": {"app": "@w6w/control", "action": "foreach"},
+      "with": {
+        "items": {"$": "steps.import_flatten.output.items"},
+        "body": ["imp_transform", "imp_upsert"]
+      }
+    },
+    {
+      "id": "imp_transform",
+      "uses": {"app": "vip.cohost.transformers.flite", "action": "transform-order"},
+      "with": {
+        "order": {"$": "foreach.item.order"},
+        "eventId": {"$": "foreach.item.eventId"},
+        "connectionId": {"$": "steps.import_conn.meta.connectionId"}
+      }
+    },
+    {
+      "id": "imp_upsert",
+      "uses": {"app": "vip.cohost.w6w", "action": "upsert-order", "connectionRef": "cohost"},
+      "with": {
+        "data": {"order": {"$": "steps.imp_transform.output.order"}}
+      },
+      "retry": {"maxAttempts": 3, "backoff": "exponential", "delayMs": 1000}
+    }
+  ],
+  "edges": [
+    { "from": "channel_changed", "to": "snapshot" },
+    { "from": "snapshot", "to": "desired" },
+    { "from": "desired", "to": "sync" },
+    { "from": "sync", "to": "register" },
+    { "from": "register", "to": "report" },
+    { "from": "order_placed", "to": "order_transform" },
+    { "from": "order_transform", "to": "order_upsert" },
+    { "from": "import_start", "to": "import_conn" },
+    { "from": "import_conn", "to": "import_list_events" },
+    { "from": "import_list_events", "to": "import_event_ids" },
+    { "from": "import_event_ids", "to": "import_each_event" },
+    { "from": "import_each_event", "to": "import_pages" },
+    { "from": "import_pages", "to": "import_each_page" },
+    { "from": "import_each_page", "to": "import_flatten" },
+    { "from": "import_flatten", "to": "import_complete" },
+    { "from": "import_complete", "to": "import_each_order" },
+    { "from": "ev_snapshot", "to": "ev_target" },
+    { "from": "imp_transform", "to": "imp_upsert" }
+  ]
+}

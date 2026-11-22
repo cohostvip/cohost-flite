@@ -7,8 +7,20 @@ export interface SourceContext {
   organizerId?: string;
 }
 
+const companyIdParam = (): Param => {
+  const param: Param & { hidden: boolean } = {
+    key: "companyId",
+    label: "Company ID",
+    type: "string",
+    required: true,
+    hidden: true,
+    default: "{{ const.account_id }}",
+  };
+  return param;
+};
+
 export const sourceParams: Param[] = [
-  { key: "companyId", label: "Cohost company ID", type: "string", required: true },
+  companyIdParam(),
   {
     key: "connectionId",
     label: "Cohost source connection ID",

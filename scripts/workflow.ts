@@ -1,0 +1,472 @@
+// Offline validation + install/publish/status for workflows/flite-sales-channel.workflow.json.
+// No process.env; tokens only via --token-file; mutating calls need --apply.
+import { readFileSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+type Json = Record<string, any>;
+
+/** Pinned T2 (vip.cohost.w6w) action + trigger keys this workflow may use. */
+export const A_KEYS = ["get-channel-event-snapshot", "list-channel-events", "register-urn-mappings", "upsert-order"] as const;
+export const A_TRIGGERS = ["channel-changed"] as const;
+const APP_A = "vip.cohost.w6w";
+const APP_F = "vip.cohost.flite";
+const APP_X = "vip.cohost.transformers.flite";
+
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+
+async function appKeys(rel: string): Promise<string[]> {
+  const mod = await import(new URL(`../${rel}`, import.meta.url).href);
+  return (mod.default.actions as Array<{ key: string }>).map((a) => a.key);
+}
+
+export async function validateWorkflow(wf: Json, indexes?: { flite: string[]; transformer: string[] }): Promise<string[]> {
+  const errs: string[] = [];
+  const fl = indexes ?? { flite: await appKeys("packages/flite/index.ts"), transformer: await appKeys("packages/cohost-flite-transformer/index.ts") };
+  if (wf.manifestVersion !== "2") errs.push('manifestVersion must be "2"');
+  const nodes: Json[] = Array.isArray(wf.nodes) ? wf.nodes : [];
+  const edges: Json[] = Array.isArray(wf.edges) ? wf.edges : [];
+  // exactly three variables a person chooses; companyId is never a variable (always const.account_id)
+  const varKeys = (Array.isArray(wf.variables) ? wf.variables : []).map((v: Json) => String(v.key)).sort().join();
+  if (varKeys !== "channelId,env,org") errs.push(`variables must be exactly channelId, env, org (found ${varKeys || "none"}); companyId is never a variable`);
+  if (/vars\.companyId/.test(JSON.stringify(nodes))) errs.push("vars.companyId is forbidden: companyId must come from const.account_id");
+  for (const k of ["channelId", "env", "org"]) {
+    const d = (Array.isArray(wf.variables) ? wf.variables : []).find((v: Json) => v.key === k);
+    if (d && d.required !== true) errs.push(`variable ${k} must be required`);
+  }
+  const ids = new Set(nodes.map((n) => n.id));
+  if (ids.size !== nodes.length) errs.push("duplicate node ids");
+  for (const e of edges) {
+    if (!ids.has(e.from)) errs.push(`edge from unknown node ${e.from}`);
+    if (!ids.has(e.to)) errs.push(`edge to unknown node ${e.to}`);
+  }
+  const isOrderTrigger = (n: Json) => n.uses?.trigger === true && n.uses?.app === APP_F && n.uses?.action === "order-placed";
+  const orderTriggers = nodes.filter(isOrderTrigger);
+  const triggers = nodes.filter((n) => n.uses?.trigger === true && !isOrderTrigger(n));
+  const tkeys = triggers.map((n) => n.uses.action).sort();
+  if (triggers.length !== 1 || tkeys.join() !== [...A_TRIGGERS].sort().join()) {
+    errs.push(`need exactly one channel trigger node (${A_TRIGGERS.join(", ")}); found ${tkeys.join(", ") || "none"}`);
+  }
+  if (orderTriggers.length !== 1) errs.push(`need exactly one ${APP_F} order-placed trigger node (the third root); found ${orderTriggers.length}`);
+  for (const t of triggers) {
+    if (t.with?.channelId === undefined) errs.push(`trigger ${t.id} must carry a channelId param`);
+  }
+  if (nodes.some((n) => n.uses?.app === "@w6w/race")) errs.push("@w6w/race node is forbidden (a single trigger feeds the snapshot directly)");
+  if (/steps\.race\b/.test(JSON.stringify(nodes))) errs.push("steps.race references are forbidden (read steps.<trigger>.output.meta)");
+  const byAction = (app: string, action: string) => nodes.find((n) => n.uses?.app === app && n.uses?.action === action && n.uses?.trigger !== true);
+  // the transformer takes companyId from const.account_id and the source connection id from a Flite step's metadata, never from vars
+  for (const n of nodes.filter((x) => x.uses?.app === APP_X)) {
+    for (const k of ["companyId", "connectionId"]) {
+      const v = n.with?.[k];
+      if (v !== undefined && typeof v === "object" && typeof v.$ === "string" && /^vars\./.test(v.$)) errs.push(`transformer node ${n.id}: ${k} must not be bound to ${v.$} (companyId is a hidden const; connectionId comes from step metadata)`);
+      if (k === "companyId" && v !== undefined) errs.push(`transformer node ${n.id}: companyId must not be passed (hidden const)`);
+    }
+  }
+  for (const n of nodes) {
+    const u = n.uses ?? {};
+    if (isOrderTrigger(n)) continue;
+    if (u.trigger === true) {
+      if (u.app !== APP_A || !(A_TRIGGERS as readonly string[]).includes(u.action)) errs.push(`node ${n.id}: unknown trigger ${u.app}/${u.action}`);
+    } else if (u.app === APP_A) {
+      if (!(A_KEYS as readonly string[]).includes(u.action)) errs.push(`node ${n.id}: unknown ${APP_A} action ${u.action}`);
+    } else if (u.app === APP_F) {
+      if (!fl.flite.includes(u.action)) errs.push(`node ${n.id}: action ${u.action} not in flite index`);
+    } else if (u.app === APP_X) {
+      if (!fl.transformer.includes(u.action)) errs.push(`node ${n.id}: action ${u.action} not in transformer index`);
+    }
+  }
+  const snap = byAction(APP_A, "get-channel-event-snapshot");
+  const desired = byAction(APP_X, "channel-event-to-flite");
+  const sync = byAction(APP_F, "sync-event");
+  const reg = byAction(APP_A, "register-urn-mappings");
+  for (const [name, n] of [["get-channel-event-snapshot", snap], ["channel-event-to-flite", desired], ["sync-event", sync], ["register-urn-mappings", reg]] as const) {
+    if (!n) errs.push(`missing step ${name}`);
+  }
+  // terminal: a script step that throws when sync errors non-empty
+  const report = nodes.find((n) => n.id === "report" && n.uses?.app === "@w6w/script");
+  if (!report) errs.push("missing terminal failing step (@w6w/script)");
+  if (snap) {
+    for (const t of triggers) {
+      const out = edges.filter((e) => e.from === t.id);
+      if (out.length !== 1 || out[0].to !== snap.id) errs.push(`trigger ${t.id} needs exactly one edge into the snapshot node`);
+    }
+  }
+  if (snap && desired && sync && reg && report) {
+    const chain = [snap, desired, sync, reg, report];
+    for (let i = 0; i < chain.length - 1; i++) {
+      if (!edges.some((e) => e.from === chain[i].id && e.to === chain[i + 1].id)) errs.push(`missing edge ${chain[i].id} -> ${chain[i + 1].id}`);
+    }
+    if (edges.some((e) => e.from === sync.id && e.to === report.id)) errs.push("terminal step must not be reachable directly from sync (must follow register)");
+    if (edges.some((e) => e.from === report.id)) errs.push("terminal step must have no outgoing edge");
+    const j = (x: unknown) => JSON.stringify(x ?? null);
+    const w = (n: Json) => n.with ?? {};
+    const trig = triggers[0];
+    if (trig) {
+      for (const k of ["eventId", "companyId", "listingId"]) {
+        if (!j(w(snap)[k]).includes(`steps.${trig.id}.output.meta.${k}`)) errs.push(`snapshot.${k} must come from steps.${trig.id}.output.meta.${k}`);
+      }
+    }
+    const ml = w(snap).mappingLabels ?? {};
+    if (Object.keys(ml).sort().join() !== "channelId,env,org,provider" || ml.provider !== "flite") errs.push("mappingLabels must be exactly {provider:flite, env, org, channelId} (no listingId)");
+    const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
+    if (!bound(ml.env, "vars.env")) errs.push("mappingLabels.env must be bound to vars.env");
+    if (!bound(w(sync).expectedEnv, "vars.env")) errs.push("sync.expectedEnv must be bound to vars.env");
+    if (!bound(w(desired).snapshot, `steps.${snap.id}.output`)) errs.push(`channel-event-to-flite.snapshot must be bound to steps.${snap.id}.output`);
+    if (!j(w(sync).desired).includes(`steps.${desired.id}.output`)) errs.push("sync.desired must come from the transformer step");
+    if (!j(w(reg).mappings).includes(`steps.${sync.id}.output.registrations`)) errs.push("register.mappings must be sync registrations");
+    if (!(reg.retry?.maxAttempts >= 3)) errs.push("register step needs retry.maxAttempts >= 3");
+    if (!j(w(report).input).includes(`steps.${sync.id}.output.errors`)) errs.push("terminal step must read sync errors");
+    const code = String(w(report).code ?? "");
+    if (!/if\s*\(.*(length|\.some|!==\s*0|>\s*0).*\)\s*\{?\s*throw\b/.test(code)) errs.push("terminal step code must throw when errors is non-empty");
+    // report must be reachable only through register: no path sync -> ... -> report avoiding register
+    const seen = new Set<string>([sync.id]);
+    const stack = [sync.id];
+    while (stack.length) {
+      const cur = stack.pop()!;
+      for (const e of edges.filter((x) => x.from === cur)) {
+        if (e.to === reg.id || seen.has(e.to)) continue;
+        seen.add(e.to);
+        stack.push(e.to);
+      }
+    }
+    if (seen.has(report.id)) errs.push("terminal step reachable without passing register");
+  }
+  validateOrderRoot(wf, nodes, edges, orderTriggers[0], byAction, errs);
+  errs.push(...validateImportRoot(wf, nodes, edges));
+  if (typeof wf.id !== "string" || !WF_ID.test(wf.id)) errs.push(`id must match ${WF_ID} (server grammar)`);
+  if (typeof wf.key !== "string" || !WF_KEY.test(wf.key)) errs.push("key must be an account slug [a-z0-9-]");
+  const text = JSON.stringify(wf);
+  if (/"(token|apiKey|password|secret|accessToken)"\s*:/i.test(text)) errs.push("credential-looking key in workflow");
+  for (const [ref, c] of Object.entries<Json>(wf.connections ?? {})) {
+    if (c.connection !== null) errs.push(`connection ${ref} must be null (bound at install)`);
+  }
+  for (const n of nodes) if (n.uses?.connection) errs.push(`node ${n.id} embeds a connection id`);
+  return errs;
+}
+
+/** Third root: Flite order-placed -> transform-order -> upsert-order. The Cohost order API resolves the order's URNs itself (no pre-resolve step). */
+function validateOrderRoot(wf: Json, nodes: Json[], edges: Json[], trig: Json | undefined, byAction: (app: string, action: string) => Json | undefined, errs: string[]): void {
+  const xform = byAction(APP_X, "transform-order");
+  const upsert = byAction(APP_A, "upsert-order");
+  for (const [name, n] of [["order trigger", trig], ["transform-order", xform], ["upsert-order", upsert]] as const) {
+    if (!n) errs.push(`missing order-root step ${name}`);
+  }
+  if (!trig || !xform || !upsert) return;
+  const chain = [trig, xform, upsert];
+  for (let i = 0; i < chain.length - 1; i++) {
+    if (!edges.some((e) => e.from === chain[i].id && e.to === chain[i + 1].id)) errs.push(`missing edge ${chain[i].id} -> ${chain[i + 1].id}`);
+  }
+  // the order path is exactly trigger -> transform -> upsert: nothing may sit between them (no URN pre-resolve, no guard)
+  for (const e of edges.filter((x) => x.from === trig.id)) if (e.to !== xform.id) errs.push(`order trigger must only feed transform-order (edge ${e.from} -> ${e.to})`);
+  for (const e of edges.filter((x) => x.from === xform.id)) if (e.to !== upsert.id) errs.push(`transform-order must only feed upsert-order (edge ${e.from} -> ${e.to})`);
+  for (const e of edges.filter((x) => x.to === upsert.id)) if (e.from !== xform.id) errs.push(`upsert-order must only be fed by transform-order (edge ${e.from} -> ${e.to})`);
+  // the Cohost order API resolves URNs: reject any resolve-urn step on the order path
+  const onPath = new Set<string>([trig.id]);
+  const stack = [trig.id];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const e of edges.filter((x) => x.from === cur)) {
+      if (onPath.has(e.to)) continue;
+      onPath.add(e.to);
+      stack.push(e.to);
+    }
+  }
+  for (const n of nodes) {
+    if (n.uses?.action === "resolve-urn") errs.push(`node ${n.id}: resolve-urn is not allowed (the order API resolves URNs)`);
+    else if (onPath.has(n.id) && ![trig.id, xform.id, upsert.id].includes(n.id)) errs.push(`node ${n.id} must not be on the order path (only order trigger, transform-order, upsert-order)`);
+  }
+  const w = (n: Json) => n.with ?? {};
+  const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
+  if (!bound(w(xform).order, `steps.${trig.id}.output.order`)) errs.push(`transform-order.order must be bound to steps.${trig.id}.output.order`);
+  if (!bound(w(xform).connectionId, `steps.${trig.id}.meta.connectionId`)) errs.push(`transform-order.connectionId must be bound to steps.${trig.id}.meta.connectionId`);
+  if (!bound(w(upsert).data?.order, `steps.${xform.id}.output.order`)) errs.push(`upsert-order.data.order must be bound to steps.${xform.id}.output.order`);
+  if (!(upsert.retry?.maxAttempts >= 3)) errs.push("upsert-order step needs retry.maxAttempts >= 3");
+  if (edges.some((e) => e.from === upsert.id)) errs.push("upsert-order must have no outgoing edge");
+  // connection refs bound on every order-root node that talks to an app account
+  const want: Array<[Json, string]> = [[trig, "flite"], [upsert, "cohost"]];
+  for (const [n, ref] of want) {
+    if (n.uses.connectionRef !== ref) errs.push(`node ${n.id} must use connectionRef ${ref}`);
+    else if (!wf.connections?.[ref]) errs.push(`node ${n.id}: connectionRef ${ref} is not declared in connections`);
+  }
+}
+
+/** Ids of the fourth, detached root (manual start -> channel events -> per-event mapping -> paged list-orders -> per-order transform + upsert). Pinned in worklist/T9.md "Design pins". */
+export const IMPORT_ROOT_IDS = [
+  "import_start", "import_conn", "import_list_events", "import_event_ids", "import_each_event", "ev_snapshot", "ev_target", "import_pages",
+  "import_each_page", "page_fetch", "import_flatten", "import_complete", "import_each_order", "imp_transform", "imp_upsert",
+] as const;
+
+const IMPORT_SET: ReadonlySet<string> = new Set(IMPORT_ROOT_IDS);
+/** Expected app/action per import-root node. */
+const IMPORT_USES: Record<string, [string, string]> = {
+  import_start: ["@w6w/trigger", "manual"],
+  import_conn: [APP_F, "list-events"],
+  import_list_events: [APP_A, "list-channel-events"],
+  import_event_ids: ["@w6w/script", "run"],
+  import_each_event: ["@w6w/control", "foreach"],
+  ev_snapshot: [APP_A, "get-channel-event-snapshot"],
+  ev_target: ["@w6w/script", "run"],
+  import_pages: [APP_X, "order-import-pages"],
+  import_each_page: ["@w6w/control", "foreach"],
+  page_fetch: [APP_F, "list-orders"],
+  import_flatten: [APP_X, "order-import-flatten"],
+  import_complete: ["@w6w/script", "run"],
+  import_each_order: ["@w6w/control", "foreach"],
+  imp_transform: [APP_X, "transform-order"],
+  imp_upsert: [APP_A, "upsert-order"],
+};
+/** Sequential edges of the import root (foreach nodes have no edge to their body). */
+const IMPORT_EDGES: ReadonlyArray<[string, string]> = [
+  ["import_start", "import_conn"], ["import_conn", "import_list_events"], ["import_list_events", "import_event_ids"], ["import_event_ids", "import_each_event"],
+  ["import_each_event", "import_pages"], ["import_pages", "import_each_page"], ["import_each_page", "import_flatten"],
+  ["import_flatten", "import_complete"], ["import_complete", "import_each_order"],
+  ["ev_snapshot", "ev_target"], ["imp_transform", "imp_upsert"],
+];
+/** foreach node -> its body (in order) and the step whose output it iterates. */
+const IMPORT_LOOPS: Record<string, { body: string[]; items: string }> = {
+  import_each_event: { body: ["ev_snapshot", "ev_target"], items: "steps.import_event_ids.output.eventIds" },
+  import_each_page: { body: ["page_fetch"], items: "steps.import_pages.output.jobs" },
+  import_each_order: { body: ["imp_transform", "imp_upsert"], items: "steps.import_flatten.output.items" },
+};
+
+/**
+ * Fourth root: detached "import all orders" flow (manual start -> channel events -> per-event mapping
+ * with channel-ownership labels -> paged list-orders -> truncation guard -> per-order transform + upsert-order).
+ * Returns validation errors.
+ */
+export function validateImportRoot(wf: Json, nodes: Json[], edges: Json[]): string[] {
+  const errs: string[] = [];
+  const n = (id: string) => nodes.find((x) => x.id === id);
+  const w = (id: string): Json => n(id)?.with ?? {};
+  const bound = (v: any, ref: string) => v && typeof v === "object" && v.$ === ref;
+  const j = (x: unknown) => JSON.stringify(x ?? null);
+  for (const id of IMPORT_ROOT_IDS) {
+    const node = n(id);
+    if (!node) { errs.push(`missing import-root step ${id}`); continue; }
+    const [app, action] = IMPORT_USES[id];
+    if (node.uses?.app !== app || node.uses?.action !== action || node.uses?.trigger === true) errs.push(`import-root step ${id} must be ${app}/${action}`);
+  }
+  if (IMPORT_ROOT_IDS.some((id) => !n(id))) return errs;
+  // detachment: no edge touches both the import root and any other node; its steps never read other roots' outputs, nor vice versa
+  for (const e of edges) {
+    if (IMPORT_SET.has(e.from) !== IMPORT_SET.has(e.to)) errs.push(`import root must be detached from the other roots (edge ${e.from} -> ${e.to})`);
+  }
+  for (const node of nodes) {
+    const refs = [...j(node.with).matchAll(/"steps\.([A-Za-z0-9_-]+)\./g)].map((m) => m[1]);
+    for (const r of refs) {
+      if (IMPORT_SET.has(node.id) !== IMPORT_SET.has(r)) errs.push(`node ${node.id} reads steps.${r} across the import root boundary`);
+    }
+  }
+  // exact edge set inside the import root
+  const inner = edges.filter((e) => IMPORT_SET.has(e.from) && IMPORT_SET.has(e.to));
+  for (const [a, b] of IMPORT_EDGES) if (!inner.some((e) => e.from === a && e.to === b)) errs.push(`missing edge ${a} -> ${b}`);
+  for (const e of inner) if (!IMPORT_EDGES.some(([a, b]) => a === e.from && b === e.to)) errs.push(`unexpected import-root edge ${e.from} -> ${e.to}`);
+  if (edges.some((e) => e.to === "import_start")) errs.push("import_start must have no inbound edge");
+  // foreach bodies: exact, contiguous (chained in order), owned by one loop, no edge leaking in or out
+  const owner = new Map<string, string>();
+  for (const [lid, spec] of Object.entries(IMPORT_LOOPS)) {
+    const body = w(lid).body;
+    if (!Array.isArray(body) || body.join() !== spec.body.join()) { errs.push(`${lid} body must be exactly [${spec.body.join(", ")}]`); continue; }
+    if (!bound(w(lid).items, spec.items)) errs.push(`${lid}.items must be bound to ${spec.items}`);
+    for (const b of body) {
+      if (owner.has(b)) errs.push(`${b} is in two foreach bodies`);
+      owner.set(b, lid);
+    }
+    for (const e of edges) {
+      const fi = body.includes(e.from), ti = body.includes(e.to);
+      if (fi !== ti) errs.push(`foreach ${lid} body edge leaks (${e.from} -> ${e.to})`);
+      if (fi && ti && body.indexOf(e.to) !== body.indexOf(e.from) + 1) errs.push(`foreach ${lid} body is not contiguous (${e.from} -> ${e.to})`);
+    }
+  }
+  // upsert only through the truncation guard: the loop owning imp_upsert has import_complete as its only inbound edge, and no path avoids the guard
+  const loop = owner.get("imp_upsert");
+  if (loop !== "import_each_order") errs.push("imp_upsert must be in the import_each_order foreach body");
+  for (const e of edges.filter((x) => x.to === "import_each_order")) {
+    if (e.from !== "import_complete") errs.push(`import_each_order must only be reachable through import_complete (edge ${e.from} -> ${e.to})`);
+  }
+  for (const e of edges.filter((x) => x.to === "imp_upsert")) {
+    if (e.from !== "imp_transform") errs.push(`imp_upsert must only follow imp_transform (edge ${e.from} -> ${e.to})`);
+  }
+  if (edges.some((e) => e.from === "imp_upsert")) errs.push("imp_upsert must have no outgoing edge");
+  const seen = new Set<string>(["import_start"]);
+  const stack = ["import_start"];
+  while (stack.length) {
+    const cur = stack.pop()!;
+    for (const e of edges.filter((x) => x.from === cur)) {
+      if (e.to === "import_complete" || seen.has(e.to)) continue;
+      seen.add(e.to);
+      stack.push(e.to);
+    }
+  }
+  for (const id of ["import_each_order", "imp_transform", "imp_upsert"]) if (seen.has(id)) errs.push(`${id} reachable without passing import_complete`);
+  // step params
+  const lc = w("import_list_events");
+  if (!bound(lc.channelId, "vars.channelId")) errs.push("import_list_events.channelId must be bound to vars.channelId");
+  const eid = w("import_event_ids").input ?? {};
+  for (const [k, ref] of [["results", "steps.import_list_events.output.results"], ["total", "steps.import_list_events.output.total"]] as const) {
+    if (!bound(eid[k], ref)) errs.push(`import_event_ids.input.${k} must be bound to ${ref}`);
+  }
+  const snap = w("ev_snapshot");
+  if (!bound(snap.eventId, "foreach.item")) errs.push("ev_snapshot.eventId must be bound to foreach.item");
+  if (!bound(snap.channelId, "vars.channelId")) errs.push("ev_snapshot.channelId must be bound to vars.channelId");
+  if (!bound(snap.companyId, "const.account_id")) errs.push("ev_snapshot.companyId must be bound to const.account_id");
+  if ("listingId" in snap) errs.push("ev_snapshot must not carry listingId (import is not listing-scoped)");
+  const labelsOk = (l: Json | undefined) => !!l && Object.keys(l).sort().join() === "channelId,env,org,provider" && l.provider === "flite" && bound(l.env, "vars.env") && bound(l.org, "vars.org") && bound(l.channelId, "vars.channelId");
+  if (!labelsOk(snap.mappingLabels)) errs.push("ev_snapshot.mappingLabels must be exactly {provider:flite, env, org, channelId} bound to vars");
+  const tgt = w("ev_target").input ?? {};
+  if (!bound(tgt.eventId, "foreach.item")) errs.push("ev_target.input.eventId must be bound to foreach.item");
+  if (!bound(tgt.mappings, "steps.ev_snapshot.output.mappings.event")) errs.push("ev_target.input.mappings must be bound to steps.ev_snapshot.output.mappings.event");
+  if (!bound(tgt.companyId, "const.account_id")) errs.push("ev_target.input.companyId must be bound to const.account_id");
+  if (!labelsOk(tgt.expected)) errs.push("ev_target.input.expected must be exactly {provider:flite, env, org, channelId} bound to vars (channel ownership)");
+  const tcode = String(w("ev_target").code ?? "");
+  if (!/labels/.test(tcode) || !/mapped/.test(tcode)) errs.push("ev_target code must verify mapping labels and return mapped");
+  const pg = w("import_pages");
+  if (!bound(pg.targets, "steps.import_each_event.output.items")) errs.push("import_pages.targets must be bound to steps.import_each_event.output.items");
+  if (pg.maxPages !== 10) errs.push("import_pages.maxPages must be the literal 10");
+  if ("eventId" in (w("import_event_ids").input ?? {})) errs.push("import_event_ids.input must not bind eventId (import all channel events)");
+  const pf = w("page_fetch");
+  if (!bound(pf.eventId, "foreach.item.eventId") || !bound(pf.page, "foreach.item.page")) errs.push("page_fetch must read eventId/page from foreach.item");
+  const fl = w("import_flatten");
+  for (const [k, ref] of [["jobs", "steps.import_pages.output.jobs"], ["pages", "steps.import_each_page.output.items"], ["skipped", "steps.import_pages.output.skipped"]] as const) {
+    if (!bound(fl[k], ref)) errs.push(`import_flatten.${k} must be bound to ${ref}`);
+  }
+  const ic = w("import_complete");
+  if (!bound(ic.input?.truncated, "steps.import_flatten.output.truncated")) errs.push("import_complete.input.truncated must be bound to steps.import_flatten.output.truncated");
+  const icode = String(ic.code ?? "");
+  if (!/throw\b/.test(icode) || !/truncated/.test(icode)) errs.push("import_complete code must throw when truncated is non-empty");
+  const xf = w("imp_transform");
+  for (const [k, ref] of [["order", "foreach.item.order"], ["eventId", "foreach.item.eventId"], ["connectionId", "steps.import_conn.meta.connectionId"]] as const) {
+    if (!bound(xf[k], ref)) errs.push(`imp_transform.${k} must be bound to ${ref}`);
+  }
+  if (!bound(w("imp_upsert").data?.order, "steps.imp_transform.output.order")) errs.push("imp_upsert.data.order must be bound to steps.imp_transform.output.order");
+  for (const id of ["page_fetch", "imp_upsert"]) if (!(n(id)!.retry?.maxAttempts >= 3)) errs.push(`${id} needs retry.maxAttempts >= 3`);
+  // connections: declared refs, bound at install (connection null in the file; main() fills them)
+  const want: Array<[string, string]> = [["import_list_events", "cohost"], ["ev_snapshot", "cohost"], ["imp_upsert", "cohost"], ["import_conn", "flite"], ["page_fetch", "flite"]];
+  for (const [id, ref] of want) {
+    if (n(id)!.uses.connectionRef !== ref) errs.push(`node ${id} must use connectionRef ${ref}`);
+    else if (!wf.connections?.[ref]) errs.push(`node ${id}: connectionRef ${ref} is not declared in connections`);
+  }
+  for (const id of IMPORT_ROOT_IDS) {
+    const u = n(id)!.uses;
+    if (u.connectionRef !== undefined && !want.some(([x]) => x === id)) errs.push(`node ${id} must not use a connectionRef`);
+  }
+  return errs;
+}
+
+/** Writes the channel id literal into every channel trigger node's `with.channelId` (the engine stores trigger params unresolved). The Flite order trigger has no channelId param and is skipped. */
+export function bindChannelTriggers(wf: Json, channelId: string): void {
+  const triggers = (wf.nodes as Json[]).filter((n) => n.uses?.trigger === true && n.uses?.app !== APP_F);
+  for (const t of triggers) {
+    if (!t.with || t.with.channelId === undefined) throw new Error(`trigger ${t.id} has no channelId param to bind`);
+    t.with.channelId = channelId;
+  }
+}
+
+/** `--var k=v` arrives as a string; store it in the variable's declared type (a "20" for a number var is rejected downstream). */
+export function coerceVar(decl: Json, raw: string): string | number | boolean {
+  if (decl.type === "number") {
+    const s = raw.trim();
+    const n = Number(s);
+    if (s === "" || !Number.isFinite(n)) throw new Error(`--var ${decl.key} must be a number, got ${JSON.stringify(raw)}`);
+    return n;
+  }
+  if (decl.type === "boolean") {
+    if (raw !== "true" && raw !== "false") throw new Error(`--var ${decl.key} must be true or false, got ${JSON.stringify(raw)}`);
+    return raw === "true";
+  }
+  return raw;
+}
+
+function parseArgs(argv: string[]) {
+  const flags: Record<string, string> = {};
+  const vars: Record<string, string> = {};
+  const conns: Record<string, string> = {};
+  const pos: string[] = [];
+  let apply = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--apply") apply = true;
+    else if (a === "--token" || a.startsWith("--token=")) throw new Error("--token is rejected; use --token-file <path>");
+    else if (a === "--var" || a === "--connection") {
+      const [k, ...rest] = (argv[++i] ?? "").split("=");
+      (a === "--var" ? vars : conns)[k] = rest.join("=");
+    } else if (a.startsWith("--")) flags[a.slice(2)] = argv[++i] ?? "";
+    else pos.push(a);
+  }
+  return { flags, vars, conns, pos, apply };
+}
+
+export interface Io { fetch: typeof fetch; out: (s: string) => void; err: (s: string) => void }
+const realIo: Io = { fetch: (...a) => fetch(...a), out: (s) => console.log(s), err: (s) => console.error(s) };
+
+/** Server id grammar (`POST /workflows`, w6w endpoints.json workflows.create): `^wf_[A-Za-z0-9-]{1,64}$`. */
+const WF_ID = /^wf_[A-Za-z0-9-]{1,64}$/;
+/** Account-slug key grammar (`[a-z0-9-]`, no underscore — w6w admin id-or-key.ts). */
+const WF_KEY = /^[a-z0-9-]+$/;
+const DEFAULT_ID = "wf_flite-sales-channel";
+
+/**
+ * Real w6w surface (admin/callable-routes.ts + admin/triggers.ts): `POST /workflows` upserts a
+ * definition (optional `?project=`), `POST /workflows/:id/publish` publishes and reconciles one
+ * subscription per trigger node, and `GET /workflows/:id[/subscriptions|/runs]` reads it back.
+ * Paths are root-relative to --w6w; there is no `/projects/<p>/` prefix.
+ */
+async function remote(cmd: string, file: string | undefined, o: ReturnType<typeof parseArgs>, io: Io): Promise<number> {
+  const { w6w, project, "token-file": tokenFile } = o.flags;
+  if (!w6w || !tokenFile) throw new Error(`${cmd} needs --w6w <url> --token-file <path> [--project <p>]`);
+  const base = `${w6w.replace(/\/+$/, "")}/workflows`;
+  const calls: Array<{ method: string; path: string; body?: string }> = [];
+  if (cmd === "status") {
+    const id = o.flags.id ?? DEFAULT_ID;
+    for (const suffix of ["", "/subscriptions", "/runs"]) calls.push({ method: "GET", path: `${base}/${encodeURIComponent(id)}${suffix}` });
+  } else {
+    if (!file) throw new Error(`${cmd} needs a workflow file`);
+    const wf = JSON.parse(readFileSync(file, "utf8")) as Json;
+    const errs = await validateWorkflow(wf);
+    if (errs.length) { for (const e of errs) io.err(`invalid: ${e}`); return 1; }
+    for (const [k, v] of Object.entries(o.vars)) {
+      const d = (wf.variables as Json[]).find((x) => x.key === k);
+      if (!d) throw new Error(`unknown --var ${k}`);
+      d.default = coerceVar(d, v);
+    }
+    if (o.vars.channelId) bindChannelTriggers(wf, o.vars.channelId);
+    for (const [ref, id] of Object.entries(o.conns)) {
+      if (!wf.connections?.[ref]) throw new Error(`unknown --connection ref ${ref}`);
+      wf.connections[ref].connection = id;
+    }
+    if (cmd === "publish") calls.push({ method: "POST", path: `${base}/${encodeURIComponent(wf.id)}/publish` });
+    else calls.push({ method: "POST", path: project ? `${base}?project=${encodeURIComponent(project)}` : base, body: JSON.stringify(wf) });
+  }
+  const mutating = calls.some((c) => c.method !== "GET");
+  for (const c of calls) io.out(`${c.method} ${c.path}`);
+  if (!o.apply && mutating) { io.err("dry run (pass --apply to send)"); return 0; }
+  const token = readFileSync(tokenFile, "utf8").trim();
+  let ok = true;
+  for (const c of calls) {
+    const res = await io.fetch(c.path, { method: c.method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: c.body });
+    io.err(`status ${res.status}`);
+    ok = ok && res.ok;
+  }
+  return ok ? 0 : 1;
+}
+
+export async function main(argv: string[], io: Io = realIo): Promise<number> {
+  const [cmd, ...rest] = argv;
+  let o;
+  try { o = parseArgs(rest); } catch (e) { io.err((e as Error).message); return 1; }
+  try {
+    if (cmd === "validate") {
+      const file = o.pos[0];
+      if (!file || !existsSync(file)) { io.err("validate <file>: file not found"); return 1; }
+      const errs = await validateWorkflow(JSON.parse(readFileSync(file, "utf8")));
+      for (const e of errs) io.err(`invalid: ${e}`);
+      if (!errs.length) io.out("ok");
+      return errs.length ? 1 : 0;
+    }
+    if (cmd === "install" || cmd === "publish" || cmd === "status") return await remote(cmd, o.pos[0], o, io);
+    io.err("usage: workflow.ts validate <file> | install|publish <file> | status --w6w <url> --token-file <path> [--project <p>] [--id <wf_id>] [--var k=v] [--connection ref=id] [--apply]");
+    return 1;
+  } catch (e) { io.err((e as Error).message); return 1; }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) process.exitCode = await main(process.argv.slice(2));
+void ROOT;
