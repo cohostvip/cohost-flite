@@ -9,6 +9,8 @@ export interface UpdateEventInput {
   venueName?: string;
   venueLocation?: string;
   city?: string;
+  state?: string;
+  zipCode?: string;
   showEvent?: boolean;
   rsvpCapacity?: number;
   startDate?: string;
@@ -29,6 +31,9 @@ export function eventProperties(input: UpdateEventInput) {
     venueName: text(input.venueName, "Venue name", { max: 200 }),
     venueLocation: text(input.venueLocation, "Venue location", { max: 500 }),
     city: text(input.city, "City", { max: 100 }),
+    // Flite's reference says state and ZIP code are not updatable; the sandbox accepted both (2026-11-21).
+    state: text(input.state, "State or province", { max: 100 }),
+    zipCode: text(input.zipCode, "ZIP / postal code", { max: 20 }),
     // Flite documents showEvent as the string "true" or "false".
     showEvent: showEvent === undefined ? undefined : String(showEvent),
     rsvpCapacity: integer(input.rsvpCapacity, "RSVP capacity"),
@@ -48,7 +53,7 @@ export default {
   resource: "event",
   idempotent: true,
   description:
-    "Change an event's name, description, venue, city, dates, times, visibility or RSVP capacity. Only the fields you set are sent. To end or reopen sales use Control Event.",
+    "Change an event's name, description, venue, city, state, ZIP code, dates, times, visibility or RSVP capacity. Only the fields you set are sent. To end or reopen sales use Control Event.",
   params: [
     { key: "eventId", label: "Event ID or URN", type: "string", required: true },
     { key: "eventName", label: "Event name", type: "string" },
@@ -56,6 +61,8 @@ export default {
     { key: "venueName", label: "Venue name", type: "string" },
     { key: "venueLocation", label: "Venue address", type: "string" },
     { key: "city", label: "City", type: "string" },
+    { key: "state", label: "State or province", type: "string" },
+    { key: "zipCode", label: "ZIP / postal code", type: "string" },
     { key: "startDate", label: "Start date", type: "date", hint: "YYYY-MM-DD" },
     { key: "startTime", label: "Start time", type: "string", hint: "24-hour HH:mm" },
     { key: "endDate", label: "End date", type: "date", hint: "YYYY-MM-DD" },

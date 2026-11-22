@@ -65,7 +65,10 @@ export function price(value: unknown, label: string, required = false): number |
   if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
     throw new Error(`${label} must be a nonnegative number`);
   }
-  return n;
+  // Flite stores a sub-cent price such as 10.005 as sent (sandbox, 2026-11-21); no checkout can charge it.
+  const cents = n * 100;
+  if (Math.abs(cents - Math.round(cents)) > 1e-6) throw new Error(`${label} must be in whole cents`);
+  return Math.round(cents) / 100;
 }
 
 export function flag(value: unknown, label: string): boolean | undefined {

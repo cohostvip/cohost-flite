@@ -1,6 +1,6 @@
 {
   "name": "flite-w6w",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Flite API actions and order webhook trigger for W6W.",
   "license": "ISC",
   "author": {

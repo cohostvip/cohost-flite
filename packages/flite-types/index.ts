@@ -60,7 +60,10 @@ export interface FliteRefreshTokenInput {
 // Request bodies. Flite documents these but returns no JSON for them, so they are written from
 // Flite's API reference (https://www.flite.city/docs) rather than derived from captures.
 
-/** `POST /api/create-event-partner` (multipart). `hostFlyer` is a required file upload. */
+/**
+ * `POST /api/create-event-partner` (multipart). `hostFlyer` is an optional file upload: the reference
+ * calls it required, but the sandbox created an event without one (2026-11-21).
+ */
 export interface FliteCreateEventInput {
   eventName: string;
   description: string;
@@ -81,12 +84,18 @@ export interface FliteCreateEventInput {
   ebEventId?: string;
 }
 
-/** `POST /api/update-event-properties` (form-encoded). State and ZIP code are not updatable. */
+/**
+ * `POST /api/update-event-properties` (form-encoded). Flite's reference says state and ZIP code are not
+ * updatable, but the sandbox accepted both (2026-11-21).
+ */
 export type FliteUpdateEventInput =
   & { eventId: string }
-  & Partial<Omit<FliteCreateEventInput, "state" | "zipCode" | "ebEventId">>;
+  & Partial<Omit<FliteCreateEventInput, "ebEventId">>;
 
-/** `POST /api/create-new-ticket`. */
+/**
+ * `POST /api/create-new-ticket`. Create ignores `maxCart` (Flite sets 10) and has no minimum per cart;
+ * set max per cart with `update-ticket-properties` (sandbox, 2026-11-21).
+ */
 export interface FliteCreateTicketInput {
   eventId: string;
   ticketName: string;

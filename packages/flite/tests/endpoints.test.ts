@@ -166,7 +166,6 @@ test("create-event validates before reading the flyer or calling Flite", async (
     [{ endDate: "2027-07-14" }, /before the start date/],
     [{ startTime: "7pm" }, /HH:mm/],
     [{ rsvpCapacity: -1 }, /RSVP capacity/],
-    [{ flyer: "" }, /Flyer image is required/],
   ] as const) {
     await assert.rejects(createEvent.execute({ ...newEvent, ...patch }, ctx), error);
   }
@@ -175,6 +174,22 @@ test("create-event validates before reading the flyer or calling Flite", async (
   await assert.rejects(createEvent.execute(newEvent, base.ctx), /file access/);
   await assert.rejects(createEvent.execute(newEvent, withFile(base.ctx, "application/pdf").ctx), /PNG, JPEG/);
   assert.equal(base.requests.length, 0);
+});
+
+test("create-event without a flyer sends the text fields only and needs no file access", async () => {
+  // Sandbox 2026-11-21: Flite answered 201, with `hostFlyer: []`, to a create without a flyer.
+  const { flyer: _flyer, ...withoutFlyer } = newEvent;
+  for (const input of [withoutFlyer, { ...newEvent, flyer: "" }]) {
+    const { ctx, requests } = context([replayCapture("staging-event-created")]);
+    const result = await createEvent.execute(input, ctx);
+    assert.equal(result.eventId, readCapture<{ data: { _id: string } }>("staging-event-created").body.data._id);
+    const contentType = new Headers(requests[0].init.headers).get("content-type")!;
+    assert.match(contentType, /^multipart\/form-data; boundary=/);
+    const form = await new Response(requests[0].init.body as Uint8Array<ArrayBuffer>, { headers: { "content-type": contentType } }).formData();
+    assert.equal(form.get("hostFlyer"), null);
+    assert.equal(textFields(form).eventName, "Summer Night");
+    assert.equal(textFields(form).zipCode, "10001");
+  }
 });
 
 test("create-event surfaces Flite's validation rejection as an HTTP error", async () => {
@@ -205,6 +220,14 @@ test("update-event sends only the fields that are set, with showEvent as Flite's
   assert.equal(requests.length, 1);
 });
 
+test("update-event sends state and ZIP code, which Flite accepts despite its reference", async () => {
+  const { ctx, requests } = context([replayCapture("staging-event-updated")]);
+  await updateEvent.execute({ eventId: "abc", state: " New Jersey ", zipCode: "07030" }, ctx);
+  assert.deepEqual(json(requests[0].init), { eventId: "abc", state: "New Jersey", zipCode: "07030" });
+  await assert.rejects(updateEvent.execute({ eventId: "abc", zipCode: "x".repeat(21) }, ctx), /ZIP/);
+  assert.equal(requests.length, 1);
+});
+
 test("delete-event soft-deletes by query and reports the Deleted status", async () => {
   const { ctx, requests } = context([replayCapture("staging-event-deleted")]);
   const result = await deleteEvent.execute({ eventId: "abc" }, ctx);
@@ -228,11 +251,42 @@ test("create-ticket sends the required name and price plus the optional fields s
     [{ ticketName: " " }, /name is required/],
     [{ availability: "maybe" }, /availability/],
     [{ capacity: 1.5 }, /Capacity/],
+    [{ ticketPrice: 10.005 }, /whole cents/],
+    [{ maxCart: 0 }, /Max per cart/],
+    [{ maxCart: 2.5 }, /Max per cart/],
   ] as const) {
     const valid = { eventId: "abc", ticketName: "GA", ticketPrice: 10 };
     await assert.rejects(createTicket.execute({ ...valid, ...patch } as never, ctx), error);
   }
   assert.equal(requests.length, 1);
+});
+
+test("create-ticket sets max per cart with a follow-up update, since Flite's create ignores it", async () => {
+  const created = readCapture<{ data: { _id: string } }>("staging-ticket-created").body.data;
+  const { ctx, requests } = context([replayCapture("staging-ticket-created"), replayCapture("staging-ticket-updated")]);
+  const result = await createTicket.execute({ eventId: "abc", ticketName: "VIP", ticketPrice: 12.34, maxCart: 4 }, ctx);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, `${API_URL}/create-new-ticket`);
+  assert.deepEqual(json(requests[0].init), { eventId: "abc", ticketName: "VIP", ticketPrice: 12.34 });
+  assert.equal(requests[1].url, `${API_URL}/update-ticket-properties`);
+  assert.deepEqual(json(requests[1].init), { eventId: "abc", ticketId: created._id, maxCart: 4 });
+  assert.equal(result.ticketId, created._id);
+  assert.equal(result.ticket.maxCart, 4);
+});
+
+test("a failed max-per-cart follow-up names the created ticket instead of inviting a duplicate create", async () => {
+  const created = readCapture<{ data: { _id: string } }>("staging-ticket-created").body.data;
+  const { ctx, requests } = context([
+    replayCapture("staging-ticket-created"),
+    Response.json({ success: false, message: "secret provider detail" }, { status: 400 }),
+  ]);
+  await assert.rejects(createTicket.execute({ eventId: "abc", ticketName: "VIP", ticketPrice: 10, maxCart: 4 }, ctx), (error: Error) => {
+    assert.ok(error.message.includes(created._id), error.message);
+    assert.match(error.message, /Update Ticket/);
+    assert.doesNotMatch(error.message, /secret provider detail/);
+    return true;
+  });
+  assert.equal(requests.length, 2);
 });
 
 test("get-ticket reads one ticket; a deleted ticket is Flite's 404", async () => {
@@ -251,6 +305,8 @@ test("update-ticket covers name, description and max per cart; an empty descript
   await updateTicket.execute({ eventId: "e1", ticketId: "t1", description: "" }, ctx);
   assert.deepEqual(json(requests[1].init), { eventId: "e1", ticketId: "t1", description: "" });
   await assert.rejects(updateTicket.execute({ eventId: "e1", ticketId: "t1", maxCart: 0 }, ctx), /Max per cart/);
+  await assert.rejects(updateTicket.execute({ eventId: "e1", ticketId: "t1", ticketPrice: 10.005 }, ctx), /whole cents/);
+  assert.equal(requests.length, 2);
 });
 
 test("delete-ticket deletes by event and ticket ID", async () => {

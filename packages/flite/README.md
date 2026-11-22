@@ -37,12 +37,12 @@ or `org_access_revoked`, never the response body. A revoked refresh token also a
 | `list-organizations` | read    | `GET /get-all-orgs-partner`                          | The account's organizations. |
 | `list-events`        | search  | `GET /get-events-all`                                | One page of events; filter by status (`Approved`, `Pending`), date, name search; up to 40 per page. |
 | `get-event`          | read    | `GET /get-event-tickets-info`, `GET /get-event-by-id` | The event with its ticket types, or alone with `includeTickets: false`. Deleted events return status `Deleted`. |
-| `create-event`       | perform | `POST /create-event-partner`                         | Creates an event; uploads the `flyer` file param (PNG/JPEG/GIF/WebP) as multipart. |
-| `update-event`       | perform | `POST /update-event-properties`                      | Name, description, venue, city, dates, times, visibility, RSVP capacity; only fields set are sent. |
+| `create-event`       | perform | `POST /create-event-partner`                         | Creates an event as multipart; the optional `flyer` file param (PNG/JPEG/GIF/WebP) is uploaded as `hostFlyer`. |
+| `update-event`       | perform | `POST /update-event-properties`                      | Name, description, venue, city, state, ZIP code, dates, times, visibility, RSVP capacity; only fields set are sent. Event status (`Approved`/`Pending`) is read-only. |
 | `control-event`      | perform | `POST /update-event-end-toggle`, `POST /update-ticket-properties` | Start/stop an event or ticket; optionally ticket capacity and a `USD,1234` minor-unit price. |
 | `delete-event`       | perform | `DELETE /delete-event-partner`                       | Soft delete. Flite refuses events with held or completed orders. |
 | `get-ticket`         | read    | `GET /get-ticket-by-id`                              | One ticket type, with `sold`. A deleted ticket is HTTP 404. |
-| `create-ticket`      | perform | `POST /create-new-ticket`                            | Adds a ticket type; price in major USD units. |
+| `create-ticket`      | perform | `POST /create-new-ticket`, `POST /update-ticket-properties` | Adds a ticket type; price in major USD units. Flite's create ignores max per cart, so `maxCart` is set by a follow-up update. |
 | `update-ticket`      | perform | `POST /update-ticket-properties`                     | Name, price, total capacity (including sold), availability (`true`, `false`, `hide`, `soon`), description, max per cart. |
 | `delete-ticket`      | perform | `DELETE /delete-ticket-partner`                      | Soft delete; also removes it from coupons. |
 | `list-orders`        | read    | `GET /get-orders-by-event`                           | One page of an event's completed orders, optional page size. |
@@ -56,8 +56,18 @@ Resource inputs accept IDs or matching source URNs. Follow `pagination.nextPage`
 next `page` (events) while `pagination.hasMore` is true. “No completed orders found” yields an empty
 list. HTTP/application failures throw so W6W can report and retry them; the error names the endpoint
 and HTTP status but never echoes the response body. Inputs are checked against Flite's documented
-rules first (dates `YYYY-MM-DD`, times `HH:mm`, nonnegative prices and capacities), so a bad field is
-named in the error instead of surfacing as an opaque HTTP 400.
+rules first (dates `YYYY-MM-DD`, times `HH:mm`, nonnegative prices in whole cents, nonnegative
+integer capacities, max per cart of at least 1), so a bad field is named in the error instead of
+surfacing as an opaque HTTP 400. Local checks matter more than the reference suggests: Flite answers
+an unknown or ignored field, and an empty update, with HTTP 200 `No changes detected`, and stores a
+sub-cent price such as `10.005` as sent.
+
+**Ticket defaults and limits.** Flite sets capacity 2000, availability `true` and max per cart 10
+when a create leaves them out. It has no minimum per cart and no fee or delivery fields: fees are
+set per order (`totalCustomFee`), not on a ticket type. Capacity cannot drop below the number sold
+(HTTP 400). If `create-ticket`'s max-per-cart update fails, the error names the created ticket; set
+the value with `update-ticket` rather than running `create-ticket` again, which would add a second
+ticket type.
 
 **Scanner verdicts.** `validate-ticket` and `check-in-ticket` take the link from the ticket QR code
 as scanned, or a ticket barcode (an order's `tickets[].barcode`), which becomes
@@ -67,9 +77,11 @@ with HTTP 409 (`ALREADY_CHECKED_IN`); both are returned as `valid: false`, not e
 `check-in-ticket` is not idempotent: a retry after a successful check-in reports
 `ALREADY_CHECKED_IN`.
 
-**Flyer upload.** `create-event` reads the flyer through the host's `ctx.file` and sends the
-multipart body as bytes, because the sandbox carries request bodies only as text or bytes. On a host
-without file access it fails with a clear error and sends nothing.
+**Flyer upload.** The flyer is optional: Flite's reference calls it required, but Flite creates the
+event without one (`hostFlyer: []`). Without a flyer, `create-event` sends the text fields only and
+needs no file access. With one, it reads the flyer through the host's `ctx.file` and sends the
+multipart body as bytes, because the sandbox carries request bodies only as text or bytes; on a host
+without file access it then fails with a clear error and sends nothing.
 
 Authentication endpoints (`partner-login`, `partner-refresh-token`, `partner-revoke-token`,
 `switch-organization-token`) are the connection's auth hooks, not actions.
