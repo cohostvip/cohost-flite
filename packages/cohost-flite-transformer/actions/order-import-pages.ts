@@ -36,6 +36,9 @@ export interface ImportPagesOutput {
   skipped: ImportSkipped[];
 }
 
+const DEFAULT_MAX_PAGES = 10;
+const MAX_PAGES_LIMIT = 1000;
+
 export default {
   key: "order-import-pages",
   title: "Plan Order Import Pages",
@@ -53,8 +56,37 @@ export default {
     { key: "jobs", label: "list-orders page jobs", type: "array" },
     { key: "skipped", label: "Skipped events", type: "array" },
   ],
-  execute(_input): ImportPagesOutput {
-    // TODO(T9 S2): implement — see worklist/T9.md "Design pins".
-    throw new Error("not implemented");
+  execute(input): ImportPagesOutput {
+    const maxPages = input.maxPages ?? DEFAULT_MAX_PAGES;
+    if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > MAX_PAGES_LIMIT) {
+      throw new Error(`maxPages must be an integer between 1 and ${MAX_PAGES_LIMIT}`);
+    }
+    if (!Array.isArray(input.targets)) throw new Error("targets must be an array");
+    const jobs: ImportPageJob[] = [];
+    const skipped: ImportSkipped[] = [];
+    const seenCohost = new Set<string>();
+    const fliteOwner = new Map<string, string>();
+    for (const t of input.targets) {
+      const cohostEventId = typeof t?.cohostEventId === "string" ? t.cohostEventId : "";
+      if (!cohostEventId) throw new Error("every target needs a cohostEventId");
+      if (seenCohost.has(cohostEventId)) {
+        skipped.push({ cohostEventId, reason: "duplicate: event listed more than once" });
+        continue;
+      }
+      seenCohost.add(cohostEventId);
+      const eventId = t.fliteEventId;
+      if (t.mapped !== true || typeof eventId !== "string" || eventId === "") {
+        skipped.push({ cohostEventId, reason: (t.mapped !== true && t.reason) || "unmapped: no Flite event mapped by this channel" });
+        continue;
+      }
+      const owner = fliteOwner.get(eventId);
+      if (owner !== undefined) {
+        skipped.push({ cohostEventId, reason: `duplicate: Flite event ${eventId} is already imported for ${owner}` });
+        continue;
+      }
+      fliteOwner.set(eventId, cohostEventId);
+      for (let page = 1; page <= maxPages; page++) jobs.push({ cohostEventId, eventId, page });
+    }
+    return { jobs, skipped };
   },
 } satisfies ActionDefinition<ImportPagesInput>;

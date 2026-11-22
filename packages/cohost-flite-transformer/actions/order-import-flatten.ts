@@ -59,8 +59,37 @@ export default {
     { key: "truncated", label: "Events cut off by the page cap", type: "array" },
     { key: "skipped", label: "Skipped events", type: "array" },
   ],
-  execute(_input): ImportFlattenOutput {
-    // TODO(T9 S2): implement — see worklist/T9.md "Design pins".
-    throw new Error("not implemented");
+  execute(input): ImportFlattenOutput {
+    if (!Array.isArray(input.jobs) || !Array.isArray(input.pages)) throw new Error("jobs and pages must be arrays");
+    if (input.jobs.length !== input.pages.length) {
+      throw new Error(`pages (${input.pages.length}) must align one-to-one with jobs (${input.jobs.length})`);
+    }
+    const items: ImportOrderItem[] = [];
+    const seen = new Set<string>();
+    const last = new Map<string, { job: ImportPageJob; page: ImportPageResult }>();
+    input.jobs.forEach((job, i) => {
+      const page = input.pages[i];
+      if (!page || !Array.isArray(page.orders)) throw new Error(`page ${job.page} of event ${job.eventId} has no orders array`);
+      const key = `${job.cohostEventId}\u0000${job.eventId}`;
+      const prev = last.get(key);
+      if (!prev || job.page > prev.job.page) last.set(key, { job, page });
+      for (const order of page.orders) {
+        const id = (order as { _id?: unknown } | null)?._id;
+        if (typeof id !== "string" || id === "") throw new Error(`order without _id on page ${job.page} of event ${job.eventId}`);
+        const dedupe = `${key}\u0000${id}`;
+        if (seen.has(dedupe)) continue;
+        seen.add(dedupe);
+        items.push({ order, eventId: job.eventId, cohostEventId: job.cohostEventId });
+      }
+    });
+    // The last fetched page of an event must be the end; anything else means the page cap cut it off.
+    const truncated: ImportTruncated[] = [];
+    for (const { job, page } of last.values()) {
+      const p = page.pagination;
+      if (p && (p.hasMore === true || (p.nextPage !== null && p.nextPage !== undefined))) {
+        truncated.push({ cohostEventId: job.cohostEventId, eventId: job.eventId, lastPage: job.page });
+      }
+    }
+    return { items, count: items.length, pageCount: input.pages.length, truncated, skipped: input.skipped ?? [] };
   },
 } satisfies ActionDefinition<ImportFlattenInput>;
