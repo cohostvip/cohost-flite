@@ -108,11 +108,17 @@ test("3-page event: all pages consumed, every order has a stable URN and deferre
   }
 });
 
-test("re-run: identical URNs, no new identities", () => {
-  const a = runImport([["evt_1", [mapping("9")]]], THREE).upserts.map((u) => u.context.urn);
-  const b = runImport([["evt_1", [mapping("9")]]], structuredClone(THREE)).upserts.map((u) => u.context.urn);
+test("re-run: identical upsert keys (order.urn in the upsert-order payload), no new identities", () => {
+  const first = runImport([["evt_1", [mapping("9")]]], THREE).upserts;
+  const second = runImport([["evt_1", [mapping("9")]]], structuredClone(THREE)).upserts;
+  const key = (u: { order: Record<string, unknown> }) => u.order.urn as string;
+  const a = first.map(key);
+  const b = second.map(key);
+  assert.equal(a.length, 5);
+  for (const k of a) assert.match(k, new RegExp(`^urn:1:${CO}:flite-sandbox:/orders/65f1e00000000000000002\\d\\d$`));
   assert.deepEqual(a, b);
   assert.equal(new Set(a).size, a.length);
+  assert.deepEqual(a, first.map((u) => u.context.urn), "payload key equals the context urn");
 });
 
 test("empty first page: nothing to import and no failure", () => {

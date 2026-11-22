@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { bindChannelTriggers, IMPORT_ROOT_IDS, main, validateImportRoot, validateWorkflow } from "../scripts/workflow.ts";
+import { bindChannelTriggers, coerceVar, IMPORT_ROOT_IDS, main, validateImportRoot, validateWorkflow } from "../scripts/workflow.ts";
 // Side-effect import: no npm script runs tests/import-scripts.test.ts (3-page fixture, idempotency, unmapped/foreign-channel skip), so test:workflow runs it through here.
 import "./import-scripts.test.ts";
 
@@ -454,6 +454,29 @@ for (const [name, mutate, re] of importMutations) {
     assert.ok(errs.some((e) => re.test(e)), `expected ${re}, got ${JSON.stringify(errs)}`);
   });
 }
+
+test("install --var coerces numeric-typed variables: importMaxPages=20 is stored as the number 20, strings stay strings", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wf-"));
+  const tf = join(dir, "tok");
+  writeFileSync(tf, "t\n");
+  const { o, io } = mkIo();
+  assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", "env=sandbox", "--var", "importMaxPages=20", "--var", "importEventId=evt_1", "--apply"], io), 0);
+  const sent = JSON.parse(o.calls[0].init.body);
+  const v = (k: string) => sent.variables.find((x: any) => x.key === k).default;
+  assert.strictEqual(v("importMaxPages"), 20);
+  assert.strictEqual(v("importEventId"), "evt_1");
+  assert.strictEqual(v("env"), "sandbox");
+  for (const bad of ["abc", "", "1e999"]) {
+    const e = mkIo();
+    assert.equal(await main(["install", FILE, "--w6w", "http://h", "--token-file", tf, "--var", `importMaxPages=${bad}`, "--apply"], e.io), 1, bad);
+    assert.match(e.o.err.join("\n"), /importMaxPages must be a number/, bad);
+    assert.equal(e.o.calls.length, 0, "nothing sent for a bad numeric var");
+  }
+  assert.strictEqual(coerceVar({ key: "k", type: "number" }, " 7 "), 7);
+  assert.strictEqual(coerceVar({ key: "k", type: "boolean" }, "true"), true);
+  assert.throws(() => coerceVar({ key: "k", type: "boolean" }, "yes"), /true or false/);
+  assert.strictEqual(coerceVar({ key: "k", type: "string" }, "20"), "20");
+});
 
 test("install --apply binds the import root's cohost and flite connections; channel triggers still bound", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wf-"));

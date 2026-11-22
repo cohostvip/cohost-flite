@@ -355,6 +355,21 @@ export function bindChannelTriggers(wf: Json, channelId: string): void {
   }
 }
 
+/** `--var k=v` arrives as a string; store it in the variable's declared type (a "20" for a number var is rejected downstream). */
+export function coerceVar(decl: Json, raw: string): string | number | boolean {
+  if (decl.type === "number") {
+    const s = raw.trim();
+    const n = Number(s);
+    if (s === "" || !Number.isFinite(n)) throw new Error(`--var ${decl.key} must be a number, got ${JSON.stringify(raw)}`);
+    return n;
+  }
+  if (decl.type === "boolean") {
+    if (raw !== "true" && raw !== "false") throw new Error(`--var ${decl.key} must be true or false, got ${JSON.stringify(raw)}`);
+    return raw === "true";
+  }
+  return raw;
+}
+
 function parseArgs(argv: string[]) {
   const flags: Record<string, string> = {};
   const vars: Record<string, string> = {};
@@ -405,7 +420,7 @@ async function remote(cmd: string, file: string | undefined, o: ReturnType<typeo
     for (const [k, v] of Object.entries(o.vars)) {
       const d = (wf.variables as Json[]).find((x) => x.key === k);
       if (!d) throw new Error(`unknown --var ${k}`);
-      d.default = v;
+      d.default = coerceVar(d, v);
     }
     if (o.vars.channelId) bindChannelTriggers(wf, o.vars.channelId);
     for (const [ref, id] of Object.entries(o.conns)) {

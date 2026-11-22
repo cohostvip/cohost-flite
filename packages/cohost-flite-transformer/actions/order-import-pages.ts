@@ -28,7 +28,8 @@ export interface ImportSkipped {
 
 export interface ImportPagesInput {
   targets: ImportTarget[];
-  maxPages?: number;
+  /** A number, or an integer-like string (a variable set from a CLI/UI arrives as text). */
+  maxPages?: number | string;
 }
 
 export interface ImportPagesOutput {
@@ -57,7 +58,8 @@ export default {
     { key: "skipped", label: "Skipped events", type: "array" },
   ],
   execute(input): ImportPagesOutput {
-    const maxPages = input.maxPages ?? DEFAULT_MAX_PAGES;
+    const raw = input.maxPages;
+    const maxPages: number = typeof raw === "string" ? (/^\s*\d+\s*$/.test(raw) ? Number(raw) : Number.NaN) : raw ?? DEFAULT_MAX_PAGES;
     if (!Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > MAX_PAGES_LIMIT) {
       throw new Error(`maxPages must be an integer between 1 and ${MAX_PAGES_LIMIT}`);
     }

@@ -51,8 +51,15 @@ test("pages: a Flite event reachable from two Cohost events, or a repeated Cohos
   assert.deepEqual(r.skipped.map((s) => s.cohostEventId), ["e2", "e1"]);
 });
 
+test("pages: an integer-like string maxPages (variable set from the CLI) behaves like the number", () => {
+  const t = [mapped("e1", "9")];
+  assert.deepEqual(plan({ targets: t, maxPages: "20" }), plan({ targets: t, maxPages: 20 }));
+  assert.equal(plan({ targets: t, maxPages: " 3 " }).jobs.length, 3);
+});
+
 test("pages: bad maxPages / targets throw", () => {
   for (const maxPages of [0, -1, 1.5, 1001, Number.NaN]) assert.throws(() => plan({ targets: [], maxPages }), /maxPages/, String(maxPages));
+  for (const maxPages of ["", "abc", "1.5", "-1", "0", "1001", "2e1"]) assert.throws(() => plan({ targets: [], maxPages }), /maxPages/, JSON.stringify(maxPages));
   assert.throws(() => plan({ targets: "x" as never }), /targets/);
   assert.throws(() => plan({ targets: [{ mapped: true, fliteEventId: "9" } as never] }), /cohostEventId/);
 });
