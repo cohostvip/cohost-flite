@@ -94,12 +94,13 @@ inputs; those need additional verified API contracts.
 
 | Action                 | Input                                                                     | Output                                                                   |
 | ---------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `transform-order`      | Full Flite `order`, source identity, optional fallback event/organizer ID | `{ order, context: { urn } }` for a Cohost import step.                  |
+| `transform-order`      | Full Flite `order`, Flite connection ID, optional channel/organizer ID    | `{ data: { order, source, attendees }, urn }`: pass `data` to Upsert Order. |
 | `event-snapshot`       | Flite event with tickets, source identity                                     | `{ snapshot }` with ticket price, availability, capacity and sold count. |
 | `list-mapping-objects` | Full Flite `event`, source identity                                       | `{ objects }` with ticket IDs, names and source URNs.                    |
 
-Source identity is the owning Cohost `companyId` and original Cohost `connectionId`. Reuse these to
-preserve mappings and deduplication; the W6W connection ID is a different identifier. URNs use
+Source identity is the owning Cohost `companyId` (hidden, `{{ const.account_id }}`) and the Flite
+connection's id (`{{ steps.<flite step>.meta.connectionId }}`), the same segment Sync Event registers
+mappings under. URNs use
 `urn:1:{companyId}:{connectionId}:/events/{id}` and related ticket/order paths.
 
 `transform-order` is `flite-to-cohost` for orders, kept for existing workflows. The snapshot

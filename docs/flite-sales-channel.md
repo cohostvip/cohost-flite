@@ -20,11 +20,18 @@ Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, t
 
 ## Orders
 
-A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes. New install variable: `companyId` (`--var companyId=...`).
+A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes.
+
+- **One Flite connection.** `transform-order.connectionId` is the Flite step's own connection (`steps.order_placed.meta.connectionId`; the import uses `steps.import_conn.meta.connectionId`). It is the URN source segment, the same one `sync-event` registers mappings under. No connection, no transform. `companyId` is the hidden const `{{ const.account_id }}`, exactly as in the Eventbrite transformer; it is never a workflow field or variable.
+- **Full upsert body.** `transform-order` outputs `data = { order, source, attendees }`, and `upsert-order.data` binds that whole object:
+  - `order`: the converted order (URN, event `contextId`, items, buyer, costs, `paymentMethod: "deferred"`), with `context.channelId` = the selling channel (`vars.channelId`) and `context.source: "flite"`.
+  - `source`: `{ system: "flite", externalId: <Flite order _id>, eventId: <Flite event id>, urn, changedAt, status, payload: <raw Flite order> }`. `account` is left to Cohost, which takes it from the URN's connection segment.
+  - `attendees`: one per issued Flite ticket: `{ orderItemId, index: 0, urn, profile: null (Cohost uses the buyer), barcodes: [barcode], checkedIn, status }`.
+- **No event id field.** The Flite event id comes from the order: detail orders carry `eventId`, and `order-import-flatten` stamps it on list orders.
 
 - **Deferred payment.** The converter always emits `paymentMethod: "deferred"`, for paid, free and refunded Flite orders alike: Flite collected the money. Amounts stay in cents, with currency, payment date, line items and buyer from the Flite order.
 - **Cohost side.** `POST /orders` strips a client-supplied `paymentMethod` except exactly `"deferred"` from a connection-authenticated write (cohost `packages/domains/bll/orders/src/orders/provenance.ts` `deferredPaymentMethod`, used by `create.ts`). This workflow writes through the Cohost connection, so its orders are stored as deferred; a buyer or dashboard write still cannot set the method.
-- **Idempotency.** The order URN is `urn:1:<companyId>:flite-<env>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
+- **Idempotency.** The order URN is `urn:1:<companyId>:<fliteConnectionId>:/orders/<id>`. The root calls `upsert-order`, never a create action, so a retry updates the same order and never duplicates it.
 - **No URN pre-resolve.** The order root does not resolve the order's event URN itself. `POST /v1/orders` resolves the remote-URN `contextId` (and ticket URNs) through the mapping before persisting, and refuses an unresolvable or other-company one with 404. The validator rejects any `resolve-urn` step or extra step on the order path.
 - **Out of scope.** Refunds and cancellations.
 
@@ -33,10 +40,10 @@ A third root imports inbound Flite orders: the Flite app's `order-placed` trigge
 A fourth root, detached from the other three (no edges to or from the event, ticket or order-placed roots; it shares only `vars` and the `cohost` / `flite` connections, both bound at install), imports ALL existing Flite orders of a channel's mapped events into Cohost.
 
 - **Root shape.** `import_start` (`@w6w/trigger` `manual`) -> `import_list_events` (`list-channel-events`) -> `import_event_ids` (script) -> `import_each_event` (foreach: `ev_snapshot` -> `ev_target`) -> `import_pages` (`order-import-pages`) -> `import_each_page` (foreach: `page_fetch`, Flite `list-orders`, retry 3) -> `import_flatten` (`order-import-flatten`) -> `import_complete` (guard script) -> `import_each_order` (foreach: `imp_transform` (`transform-order`) -> `imp_upsert` (`upsert-order`, retry 3)). `validateImportRoot` in `scripts/workflow.ts` pins this shape.
-- **How to start.** Manual only. The optional Cohost event id is the install variable `importEventId` (default `""` = every event on the channel); `importMaxPages` (default 10) bounds paging. No new env vars.
+- **How to start.** Manual only. It imports every event on the channel; `maxPages` (literal 10) bounds paging. No new env vars.
 - **Pagination.** Flite `list-orders` returns `pagination.hasMore` / `nextPage`. The engine has no while-loop, so paging is a bounded foreach over pages 1..`importMaxPages` per event. Flatten consumes every page and marks an event truncated when its last fetched page still has `hasMore` or a non-null `nextPage`; `import_complete` then throws before any upsert, so nothing is imported for a truncated run.
-- **Idempotency.** Each order gets the stable URN `urn:1:<companyId>:flite-<env>:/orders/<id>` and `paymentMethod: "deferred"` from `transform-order`; `imp_upsert` is `upsert-order`, so re-running imports nothing twice. Orders are also de-duplicated by Flite `_id` per event before upsert.
-- **Skip rules.** An event is imported only if exactly one mapping has the URN `urn:1:<companyId>:flite-<env>:/events/<id>` AND its labels equal `{provider: flite, env, org, channelId}`. Unmapped or foreign-channel events are skipped visibly (`skipped` with a reason) and never imported. A Flite event mapped from two Cohost events is imported once.
+- **Idempotency.** Each order gets the stable URN `urn:1:<companyId>:<fliteConnectionId>:/orders/<id>` and `paymentMethod: "deferred"` from `transform-order`; `imp_upsert` is `upsert-order`, so re-running imports nothing twice. Orders are also de-duplicated by Flite `_id` per event before upsert.
+- **Skip rules.** An event is imported only if exactly one mapping has the URN `urn:1:<companyId>:<fliteConnectionId>:/events/<id>` (this Flite connection; `companyId` from the snapshot) AND its labels equal `{provider: flite, channelId}`. Unmapped or foreign-channel events are skipped visibly (`skipped` with a reason) and never imported. A Flite event mapped from two Cohost events is imported once.
 - **Deferred caveat (T8).** As for the order-placed root, the Cohost `POST /orders` strips a client-supplied `paymentMethod`, so recording the imported orders as deferred on the Cohost side depends on T8; the converter output itself is deferred.
 - **Known limits.** (a) The `importMaxPages` cap wastes empty-page calls for small events, and an event over the cap makes `import_complete` throw. (b) A channel with more than 100 events throws: `list-channel-events` is not paginated. (c) The nested binding `foreach.item.eventId` and body steps reading a sibling body step's output are assumed supported by the engine but were never run (no w6w writes or engine runs were allowed). (d) `get-channel-event-snapshot` is called without `listingId`; that is unverified.
 
@@ -46,12 +53,12 @@ A fourth root, detached from the other three (no edges to or from the event, tic
 - **D2 Account.** Flite sandbox credentials only, taken from the bound Flite connection. No new env vars. Staging host is `api-staging.fliteapi.city`.
 - **D3 Removal / stop.** Unlist, hide, ended, canceled, draft: the Flite event is ended and its tickets set to unavailable. The Flite id mapping is kept. Re-adding the event reopens the same Flite event and tickets and never creates a second. An owner `started` event stays active (`hold`) only while its listing is present and `visibility === "visible"`.
 - **D4 Remaining stock.** Flite ticket capacity is Cohost capacity − quantity sold − reserved. Cohost has no reservation count, so reserved is 0. `maximumQuantity` is never read. Sold counts come from Cohost; inbound Flite orders are imported by the third root (see Orders).
-- **D5 Dedup.** Flite ids come only from the durable URN mappings (labels `id` / `eventId`), never from name matching. An event mapping suppresses `/create-event-partner`. With several event mappings the lexicographically smallest Flite id is used and a warning is emitted. A ticket mapping is honoured only if its `labels.eventId` equals the chosen event id. Mappings are registered right after creation. Lookup labels are `{provider, env, org, channelId}` (+ `kind`) and never include `listingId`, which changes on remove→re-add. A differing stored `listingId` never causes a create; it re-registers the mapping with the new label.
+- **D5 Dedup.** Flite ids come only from the durable URN mappings (labels `id` / `eventId`), never from name matching. An event mapping suppresses `/create-event-partner`. With several event mappings the lexicographically smallest Flite id is used and a warning is emitted. A ticket mapping is honoured only if its `labels.eventId` equals the chosen event id. Mappings are registered right after creation. Lookup labels are `{provider, channelId}` (+ `kind`); `sync-event` then keeps only the mappings whose URN carries its own Flite connection id, so another Flite account or sandbox-vs-production never matches and never include `listingId`, which changes on remove→re-add. A differing stored `listingId` never causes a create; it re-registers the mapping with the new label.
 - **D6 Multi-trigger.** Both roots normalize to (channel, event) and re-read current state; stale payload content is not used.
 - **D7.** No change to the w6w engine and no Cohost API schema change.
 
-Mapped URN: `urn:1:<companyId>:flite-<env>:/events/<fliteEventId>[/tickets/<fliteTicketId>]`.
-Stored labels: `{provider:"flite", env, org, channelId, listingId, kind, id, eventId}`.
+Mapped URN: `urn:1:<companyId>:<fliteConnectionId>:/events/<fliteEventId>[/tickets/<fliteTicketId>]`.
+Stored labels: `{provider:"flite", env, channelId, listingId, kind, id, eventId}`, where `env` is informational and comes from the connection.
 
 ## Mode table
 
@@ -68,7 +75,7 @@ Mode comes from the owner `event.status` and the snapshot:
 - `hold`: ticket capacity/availability updates only. No event update, end toggle or create.
 - `stop`: end toggle ended=true unless already ended, and availability "false" on each remote ticket not already "false". No creates, no registrations, no `/delete-*` calls.
 - An event-level conversion failure (no venue state/ZIP, no timezone) gives `event:null` plus an `errors` entry, and `sync-event` makes zero requests. Per-ticket problems (non-USD, donation) exclude that ticket and add an `errors` entry.
-- The env guard throws before any request unless the client host matches `expectedEnv` (`sandbox` iff the base URL is the staging URL) and `desired.labels.env`.
+- The Flite environment is the connection's: a `-staging` auth key targets the sandbox API, anything else production. There is no env variable or `expectedEnv` field.
 - `sync-event` does not throw after its first successful create: later failures go to `errors`.
 
 ## Capacity formula
@@ -96,14 +103,13 @@ Install, publish or check status (dry run by default; prints method and path onl
 
     node scripts/workflow.ts install workflows/flite-sales-channel.workflow.json \
       --w6w <url> --project <project> --token-file <path> \
-      --var channelId=<id> --var env=sandbox --var org=<flite-org> \
+      --var channelId=<id> \
       --connection <ref>=<connectionId>
     # add --apply to send; publish and status take the same flags
 
 Notes:
 - The token comes only from `--token-file`; `--token` is rejected. The script never reads `process.env`.
-- Required variables: `channelId`, `env` (`sandbox|production`), `org`; `currency` defaults to `USD`.
-- Bind the Flite connection to the sandbox account for `env=sandbox`. The env guard makes a mismatch fail before any request.
+- The only variable is `channelId`. `companyId` is the account const; the Flite environment and account are whatever the bound Flite connection is (bind a sandbox connection to test against staging).
 - Install/publish/status use the confirmed w6w root paths (`POST /workflows`, `POST /workflows/:id/publish`, `GET /workflows/:id[/subscriptions|/runs]`); verified live in T3.
 - The app catalog must contain `vip.cohost.w6w` (with `get-channel-event-snapshot`, `register-urn-mappings`, and the `channel-changed` trigger), `vip.cohost.flite` and `vip.cohost.transformers.flite`.
 
@@ -119,7 +125,7 @@ Notes:
 
 Run with `node scripts/sandbox-e2e.ts setup --token-file <cohost-tenant token> --w6w https://api-s2.w6w.dev --cohost-cred-file <json {email,password}> --out <artifacts/e2e> --apply`. It is idempotent: connections and the channel are found by the `fsc-e2e-` display name/name prefix, so a re-run creates nothing new. It writes `setup.json` (ids only, no secrets).
 
-- **Connections.** `POST /apps/<appId>/connections` with `{authKey, displayName, credential}` (`POST /connections` is a 404); `POST /connections/<id>/test` re-checks. The Flite SANDBOX connection uses auth key `partner-login-staging` and the credential `{email, password}` taken from `oss/flite/.env.local`; it only ever travels in that body. The organization the connection landed on is `ORG A`, and that is what the workflow `org` variable carries (the variable is only a mapping label).
+- **Connections.** `POST /apps/<appId>/connections` with `{authKey, displayName, credential}` (`POST /connections` is a 404); `POST /connections/<id>/test` re-checks. The Flite SANDBOX connection uses auth key `partner-login-staging` and the credential `{email, password}` taken from `oss/flite/.env.local`; it only ever travels in that body. The organization the connection landed on is `ORG A`, (the former `org` variable was only a mapping label and is gone; the connection id scopes the account).
 - **Cohost connection.** Auth key `api-token` with the slot-2 auth-emulator bearer as the token. Its `test` reads `/orders?limit=1`, which answers 403 for the emulator user (company routes answer 200), so the test reports "token rejected" while the connection is `connected` and usable. The emulator token also expires after about an hour; re-run setup against a fresh connection if runs begin to answer 401.
 - **Channel.** `POST /company/sales-channels` needs `channel.filters` (`{tags:[], excludeContextId:[], includeContextId:[]}`); without it the API answers 500. Created as `type api`, `isPublic false`.
 - **Trigger params are stored unresolved.** After a plain install, the subscription for `channel-changed` stored `channelId` as the literal object `{"$":"vars.channelId"}`, so the T2 trigger's channel filter (`typeof params.channelId === "string"`) is skipped. `setup` therefore installs `artifacts/e2e/workflow.installed.json`, the workflow with the `channelId` of the channel trigger (`channel-changed`) written as the literal channel id; the stored subscription then shows `channelId: <id>`. `workflow.ts install --var channelId=<id>` now does this substitution itself (`bindChannelTriggers`). The channel root is channel-scoped; the former company-wide `ticket-changed` root is gone. Slot-2 / sold-count movement is still not in any channel signal.
