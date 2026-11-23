@@ -88,20 +88,31 @@ Authentication endpoints (`partner-login`, `partner-refresh-token`, `partner-rev
 
 ## Order Placed trigger
 
-1. Create an `order-placed` subscription with this app's connection.
-2. Copy the callback URL W6W issues.
-3. Call `register-webhook` with that URL. Set `replaceExisting: true` only to replace the existing
-   consumer: Flite supports one URL per organization.
+A manual webhook (`webhook.registration: "manual"`) on Flite Partner Webhooks
+(`docs/api-docs.md`, "Webhooks"):
+
+1. Put the trigger on a step. The editor shows the receive URL right away; the empty Signing Secret
+   does not block creating the subscription.
+2. In Flite, open Integrations → Developers → Webhooks → Register Webhook, paste that URL, choose
+   the event source and the events (`order.completed`, plus `order.refunded`, `order.updated` and
+   `order.scan` to keep orders in sync).
+3. Copy the signing secret Flite shows (`fsec_live_…`, shown once) into the trigger's **Signing
+   Secret** (`signingSecret`, `type: "secret"`, encrypted at rest) and save. The URL stays the same.
 4. Use the full `order` output in workflow steps.
 
-POST JSON with `action: "order-placed"` and `orderId` emits an event. Test pings and unknown event
-types emit nothing. Missing order IDs fail ingestion. The output hook fetches the order through the
-authenticated API rather than trusting order details in the body.
+Flite posts `{ webhookEventId, eventType, orderId, organizationId, eventId, created }` with
+`X-Flite-Signature: sha256=<hex>` and `X-Flite-Timestamp`. `handleIngest` recomputes
+`HMAC-SHA256(secret, timestamp + "." + body)` over the raw body (Web Crypto, constant-time compare,
+`lib/webhook.ts`) and refuses a delivery that does not match, is older than five minutes, or
+arrives before the secret is set. `order.completed`, `order.refunded`, `order.updated`,
+`order.disputed` and `order.scan` emit an event; `order.created` (a pending checkout) and unknown
+types emit nothing. The output hook fetches the order through the authenticated API rather than
+trusting the body. Flite delivers at least once: dedupe on `webhookEventId`, and downstream writes
+by source order URN.
 
-The supplied API contract documents neither webhook signatures nor a delete URL endpoint.
-Registration is explicit; deleting a W6W subscription does not clear Flite's URL. Replace it when
-retiring the subscription. Keep the callback private and deduplicate downstream writes by source
-order URN.
+If the secret is rolled in Flite the old one stops working immediately: paste the new one into the
+trigger. `register-webhook` / `get-webhook` drive Flite's older per-organization webhook URL API,
+which is separate from the signed Partner Webhooks registered in the Flite UI.
 
 ## Build
 

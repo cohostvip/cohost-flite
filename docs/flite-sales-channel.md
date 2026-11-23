@@ -20,7 +20,7 @@ Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, t
 
 ## Orders
 
-A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`) -> `order_transform` (`transform-order`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes.
+A third root imports inbound Flite orders: the Flite app's `order-placed` trigger (`order_placed`, a signed manual Partner Webhook: paste the Flite signing secret into the trigger's Signing Secret) -> `order_transform` (`transform-order`) -> `order_upsert` (`upsert-order`, `vip.cohost.w6w`, retry 3). Flite and Cohost connections are bound at install like the other nodes.
 
 - **One Flite connection.** `transform-order.connectionId` is the Flite step's own connection (`steps.order_placed.meta.connectionId`; the import uses `steps.import_conn.meta.connectionId`). It is the URN source segment, the same one `sync-event` registers mappings under. No connection, no transform. `companyId` is the hidden const `{{ const.account_id }}`, exactly as in the Eventbrite transformer; it is never a workflow field or variable.
 - **Full upsert body.** `transform-order` outputs `data = { order, source, attendees }`, and `upsert-order.data` binds that whole object:
