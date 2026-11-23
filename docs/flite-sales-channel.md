@@ -86,6 +86,15 @@ The desired state carries `flyerUrl`: the channel's own flyer, else the owner ev
 - **Allowed hosts.** The app's `network.allow` adds `firebasestorage.googleapis.com` and `storage.googleapis.com`, where Cohost keeps flyers. A flyer on any other host is refused by the runtime and reported as a warning.
 - **After create** (publish on a mapped event) `sync-event` fills a missing flyer: when Flite's `hostFlyer` is empty it downloads `flyerUrl` the same way and posts it to `/update-event-flyer` (multipart `eventId` + `hostFlyer`). That endpoint is not in Flite's partner reference; it was verified on the sandbox and production APIs on 2026-11-23. `/update-event-properties` ignores `hostFlyer` in every form. A download failure is a warning and a Flite refusal is an error; neither stops the rest of the sync. A flyer already on Flite is never replaced: Flite re-hosts uploads on its CDN, so a changed Cohost flyer cannot be detected.
 
+## Descriptions
+
+Flite gets plain text for the event and ticket descriptions. Flite renders a ticket description as text (HTML shows as literal tags), its app and search data read the event description as text, and the sandbox stores plain text verbatim (line breaks, `•`, `’`, `&`, `<`; checked 2026-11-23). The event page renders the description with `white-space: pre-wrap`, so paragraphs and bullet lines show; ticket descriptions collapse line breaks, so bullets run inline there.
+
+- **Event.** Every live content block of the channel, else of the owner event, in `order`: the `description` block first and untitled, each other one as `Title` + newline + text; an FAQ block as its questions and answers. Without block text: the owner `description`, else `summary`, else the event name.
+- **HTML → text.** Blocks are paragraphs, `<br>` a line break, list items `• ` lines (`1. ` in an ordered list), and all HTML 4 named and numeric entities are decoded. Scripts, styles and comments are dropped, and empty `<p>&nbsp;</p>` paragraphs vanish. A value with no HTML tag is plain text and keeps its line breaks.
+- **Limit.** Over 5000 characters (the Flite app's own input limit) the text is cut at a paragraph or word break and ends in `…`.
+- **Updates.** `sync-event` compares the description with Flite's and updates it when it differs, so the first sync after a transformer upgrade rewrites earlier HTML descriptions as text.
+
 ## Capacity formula
 
 Per desired ticket, joined to the owner ticket by id:
@@ -149,6 +158,6 @@ Flite staging only (`partner-login-staging`, `api-staging.fliteapi.city`); the r
 - **R11 (RECORDED).** Capacity 50 → 40 → 5 maps to Flite capacity 40 and 5 with only `update-ticket` ops. The partial-sale half (sold > 0) cannot be driven on slot-2 (no route creates a sale); `capacity - sold` is covered only by the T1 unit tests.
 - **R12.** No second company can be created on slot-2, so the "foreign" event is an id the connection's company cannot read (API 404). The run fails at the snapshot node, no sync output, and the Flite event count is unchanged.
 - **R13.** A EUR ticket and a donation ticket (`priceCategory donation`) fail the run with one error each; no Flite ticket exists for them and a second ping creates nothing.
-- **Unlist route** is `DELETE /events/:id/channels/:channelId`. Flite stores the description as `<p>…</p>`. An empty description is recorded in R7.
+- **Unlist route** is `DELETE /events/:id/channels/:channelId`. Flite stores the description as sent (then `<p>…</p>`; since transformer 2.2.0 plain text, see "Descriptions"). An empty description is recorded in R7.
 - **Installed workflow** carries the channel trigger's `channelId` as a literal (trigger params are stored unresolved); see the setup findings above.
 - **Tenant-app catalog.** Rows R1–R9 and R11–R13 ran on the first slot-2 build of `vip.cohost.w6w`; R10 ran on a rebuild from clean `cohost-w6w` HEAD including the T4 fix (a build from the lane's uncommitted overlay was rejected by the server with `manifest_mismatch`). The catalog is restored from backup at the end of the run.

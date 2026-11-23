@@ -38,8 +38,16 @@ the anonymized live captures and the documented examples.
   `Approved` → `live`, `Pending` → `queued`, anything else → `draft`. `public` is `Approved` and
   `showEvent`.
 - **Address.** Flite state names (`New York`) become region codes (`NY`), and back. Country is `US`.
-- **Description.** Flite HTML becomes plain text. The original HTML is written back unless the text
-  was edited.
+- **Description.** Flite gets plain text only: its ticket descriptions show HTML as literal tags,
+  and its app and search data read event descriptions as text. Cohost HTML (from the rich-text
+  editor) becomes text: blocks are paragraphs, `<br>` a line break, list items `• ` lines (`1. ` in
+  an ordered list), and every named (HTML 4) and numeric entity is decoded (`&rsquo;` → `’`). A
+  plain-text value keeps its line breaks. Text over Flite's 5000 characters is cut at a word break
+  with `…`. Flite's own HTML is read as text, and written back unchanged unless the text was edited.
+- **Channel event description** (`channel-event-to-flite`). Every live content block of the channel
+  (or, with none, of the owner event) in order: the `description` block first and untitled, each
+  other one under its title; an FAQ block as its questions and answers. Without block text: the owner
+  description, else summary, else the event name. Ticket descriptions are converted the same way.
 - **Ticket availability.** `true` → `live`, or `sold-out` once `sold >= capacity`; `hide` →
   `hidden`; `soon` → `draft`; `false` → `unavailable`. Sold-out writes back as `true`, since Flite
   derives it.
