@@ -58,6 +58,11 @@ export interface DesiredState {
   labels: DesiredLabels;
   /** Flite create-event fields, or null when the event cannot be converted. */
   event: Record<string, string> | null;
+  /**
+   * The flyer image to upload as Flite's `hostFlyer`: the channel's own flyer, else the owner
+   * event's. https only; null when there is none. Flite accepts a flyer only on create.
+   */
+  flyerUrl: string | null;
   tickets: DesiredTicket[];
   mappings: ChannelSnapshot["mappings"];
   errors: Array<{ message: string; ticketId?: string }>;
@@ -127,6 +132,15 @@ function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
   } as unknown as CohostEvent;
   const { eventId: _eventId, rsvpCapacity: _rsvp, ebEventId: _eb, ...fields } = cohostEventToFlite(cohost);
   return Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, String(v)]));
+}
+
+/** The channel flyer, else the owner event's; only an https URL. */
+function flyerUrl(snapshot: ChannelSnapshot): string | null {
+  for (const source of [snapshot.channelEvent, snapshot.event]) {
+    const url = str(rec(rec(source).flyer).url);
+    if (url.startsWith("https://")) return url;
+  }
+  return null;
 }
 
 function remaining(owner: Rec | undefined): number | undefined {
@@ -214,6 +228,7 @@ export function buildDesiredState(snapshot: ChannelSnapshot, _options: BuildOpti
     eventUrn,
     labels,
     event,
+    flyerUrl: flyerUrl(snapshot),
     tickets,
     mappings: snapshot.mappings ?? { event: [], tickets: {} },
     errors,

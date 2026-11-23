@@ -20,7 +20,7 @@ export interface CreateEventInput {
   ebEventId?: string;
 }
 
-const FLYER_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+export const FLYER_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /** The documented create fields as multipart text values, validated. */
 export function createEventFields(input: CreateEventInput): Record<string, string> {

@@ -27,7 +27,9 @@
     "network": {
       "allow": [
         "api-main.fliteapi.city",
-        "api-staging.fliteapi.city"
+        "api-staging.fliteapi.city",
+        "firebasestorage.googleapis.com",
+        "storage.googleapis.com"
       ]
     },
     "entry": "./index.ts"

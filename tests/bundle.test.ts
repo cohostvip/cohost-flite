@@ -93,7 +93,9 @@ test("flite bundle: actions and network allow-list", async () => {
   ]);
   assert.deepEqual(apps.flite.app.auth?.map((auth) => auth.key), ["partner-login", "partner-login-staging", "bearer-token", "bearer-token-staging"]);
   assert.equal(apps.flite.app.triggers?.length, 1);
-  assert.deepEqual(apps.flite.manifest.network.allow, ["api-main.fliteapi.city", "api-staging.fliteapi.city"]);
+  assert.deepEqual(apps.flite.manifest.network.allow, [
+    "api-main.fliteapi.city", "api-staging.fliteapi.city", "firebasestorage.googleapis.com", "storage.googleapis.com",
+  ]);
   const { ctx, requests } = context([{ success: true, data: order }]);
   const result = await action("flite", "get-order").execute({ orderId: "order_1" }, ctx as HookContext);
   assert.equal((result as { order: { _id: string } }).order._id, "order_1");

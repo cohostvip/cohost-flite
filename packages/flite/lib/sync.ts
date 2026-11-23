@@ -32,6 +32,8 @@ export interface DesiredState {
   eventUrn: string;
   labels: { provider: string; channelId: string; listingId: string };
   event: Record<string, string> | null;
+  /** The flyer to upload on create (Flite takes `hostFlyer` only on create). Absent from older transformers. */
+  flyerUrl?: string | null;
   tickets: DesiredTicket[];
   mappings: { event: MappingRecord[]; tickets: Record<string, MappingRecord[]> };
   errors: Array<{ message: string; ticketId?: string }>;

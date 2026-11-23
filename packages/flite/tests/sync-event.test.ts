@@ -358,3 +358,44 @@ test("connectionSegment: ctx.connection.id, or a clear error", () => {
   assert.throws(() => connectionSegment({}), /connection id is required/);
   assert.throws(() => connectionSegment({ connection: { id: "a:b" } }), /valid URN segment/);
 });
+
+// ---- flyer ----
+const FLYER = "https://firebasestorage.googleapis.com/v0/b/x/o/flyer.jpg?alt=media";
+const jpeg = () => new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]), { headers: { "content-type": "image/jpeg" } });
+const text = (r: { init: RequestInit }) => new TextDecoder().decode(r.init.body as Uint8Array);
+
+test("create path uploads the desired flyer as hostFlyer: downloaded first, never with the Flite token", async () => {
+  const { ctx, requests } = context([jpeg(), { success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+  const out = await syncEvent.execute({ desired: desired({ event: evFields, tickets: [tkt("t1")], flyerUrl: FLYER }) }, ctx);
+  assert.equal(requests[0].url, FLYER);
+  assert.equal(new Headers(requests[0].init.headers).get("authorization"), null);
+  assert.equal(new URL(requests[1].url).pathname, "/api/create-event-partner");
+  const form = text(requests[1]);
+  assert.match(form, /name="hostFlyer"; filename="flyer\.jpg"\r\nContent-Type: image\/jpeg/);
+  assert.match(form, /name="eventName"/);
+  assert.equal(out.eventId, "fe9");
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual(out.errors, []);
+});
+
+test("a flyer that cannot be downloaded or is not an image never blocks the create: warning, no hostFlyer", async () => {
+  for (const flyer of [new Response("nope", { status: 404 }), new Response("<html>", { headers: { "content-type": "text/html" } })]) {
+    const { ctx, requests } = context([flyer, { success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+    const out = await syncEvent.execute({ desired: desired({ event: evFields, tickets: [tkt("t1")], flyerUrl: FLYER }) }, ctx);
+    assert.equal(out.eventId, "fe9");
+    assert.doesNotMatch(text(requests[1]), /hostFlyer/);
+    assert.equal(out.warnings.length, 1);
+    assert.match(out.warnings[0], /flyer/);
+  }
+});
+
+test("mapped event without a Flite flyer: warn that Flite cannot add one after create; no download", async () => {
+  const { ctx, requests } = context([remoteEvent({ hostFlyer: [] })], true);
+  const out = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, ctx);
+  assert.deepEqual(paths(requests), ["/get-event-tickets-info"]);
+  assert.equal(out.warnings.length, 1);
+  assert.match(out.warnings[0], /flyer/);
+  const withFlyer = context([remoteEvent({ hostFlyer: ["https://d3skqfvgyt6f3j.cloudfront.net/flyer/x.jpg"] })], true);
+  const ok = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, withFlyer.ctx);
+  assert.deepEqual(ok.warnings, []);
+});

@@ -23,7 +23,6 @@ test("each auth method signs only its own environment", async () => {
     for (
       const url of [
         `${wrong}/get-order-by-id`,
-        "https://evil.example.test/api/get-order-by-id",
         `${base.replace("https:", "http:")}/get-order-by-id`,
       ]
     ) {
@@ -36,6 +35,13 @@ test("each auth method signs only its own environment", async () => {
         /Refusing/,
       );
     }
+    // A non-Flite host (a flyer download) goes out unsigned: no token, and a caller's own
+    // authorization header is dropped too.
+    const foreign = await auth.sign!({
+      credential: { token: "test-token" },
+      request: { url: "https://evil.example.test/api/get-order-by-id", method: "GET", headers: { Authorization: "Bearer x" } },
+    }, ctx);
+    assert.deepEqual(foreign.headers, {});
   }
 });
 

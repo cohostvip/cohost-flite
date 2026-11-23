@@ -12,7 +12,8 @@ import {
   relabelRegistrations,
   type SyncOutput,
 } from "../lib/sync.ts";
-import { createEventFields, type CreateEventInput } from "./create-event.ts";
+import { createEventFields, FLYER_TYPES, type CreateEventInput } from "./create-event.ts";
+import type { MultipartFile } from "../lib/fields.ts";
 import { newTicket } from "./create-ticket.ts";
 import { ticketProperties } from "./update-ticket.ts";
 
@@ -101,6 +102,11 @@ export default {
       if (!desired.event) return out; // conversion failure: errors only, no writes
       if (remote.isEventEnd) {
         await attempt("reopen-event", eventId, { ended: false }, () => client.setEventEnded(eventId, false));
+      }
+      if (desired.flyerUrl && !(remote.hostFlyer ?? []).length) {
+        out.warnings.push(
+          `event ${eventId} has no flyer on Flite: Flite's API accepts a flyer only when an event is created, so upload it in Flite`,
+        );
       }
       const changed = diffEvent(desired.event, remote);
       if (Object.keys(changed).length) {
@@ -212,12 +218,41 @@ async function createPath(
   out: SyncOutput,
   attempt: Attempt,
 ): Promise<SyncOutput> {
-  // Validation and the create itself may throw: nothing exists yet.
-  const created = await client.createEvent(createEventFields(desired.event as unknown as CreateEventInput));
+  // Validation and the create itself may throw: nothing exists yet. A flyer problem never blocks the create.
+  const fields = createEventFields(desired.event as unknown as CreateEventInput);
+  const flyer = desired.flyerUrl ? await downloadFlyer(client, desired.flyerUrl, out) : undefined;
+  const created = await client.createEvent(fields, flyer);
   const eventId = created._id;
   out.eventId = eventId;
   out.operations.push({ op: "create-event", target: eventId });
   out.registrations.push(registration(desired, env, connectionId, eventId));
   for (const want of desired.tickets) await createTicket(client, desired, env, connectionId, eventId, want, out, attempt);
   return out;
+}
+
+/** Flite's own flyer limit is unpublished; this is the W6W per-file ceiling. */
+const FLYER_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The flyer image for `hostFlyer`, or undefined (with a warning) when it cannot be used. The
+ * request goes out unsigned: the Flite auth's `sign` adds the token only on Flite's own hosts.
+ */
+async function downloadFlyer(
+  client: FliteClient,
+  url: string,
+  out: SyncOutput,
+): Promise<Omit<MultipartFile, "name"> | undefined> {
+  try {
+    const response = await client.ctx.fetch(url, { headers: { accept: "image/*" } });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentType = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    if (!FLYER_TYPES.includes(contentType)) throw new Error(`${contentType || "unknown type"} is not a PNG, JPEG, GIF or WebP image`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > FLYER_MAX_BYTES) throw new Error(`${bytes.length} bytes is outside 1 byte to 10 MB`);
+    const ext = contentType.split("/")[1].replace("jpeg", "jpg");
+    return { filename: `flyer.${ext}`, contentType, bytes };
+  } catch (error) {
+    out.warnings.push(`flyer not uploaded: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
 }

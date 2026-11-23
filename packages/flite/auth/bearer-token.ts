@@ -9,10 +9,20 @@ function tokenOf(credential: unknown): string {
   return token.trim();
 }
 
-/** `sign` for every Flite auth: the credential's `token`, only to that environment's `/api/`. */
+const FLITE_HOSTS = new Set([new URL(API_URL).hostname, new URL(STAGING_API_URL).hostname]);
+
+/**
+ * `sign` for every Flite auth: the credential's `token`, only to that environment's `/api/`. A
+ * request to a host that is not Flite's (the flyer download) goes out unsigned, with any
+ * authorization header removed; a request to the other Flite environment, or not over https, is refused.
+ */
 export function signFliteRequest(base: string): SignHook {
   return ({ request, credential }) => {
     const url = new URL(request.url);
+    if (!FLITE_HOSTS.has(url.hostname)) {
+      const headers = Object.fromEntries(Object.entries(request.headers).filter(([k]) => k.toLowerCase() !== "authorization"));
+      return { ...request, headers };
+    }
     if (url.origin !== new URL(base).origin || !url.pathname.startsWith("/api/")) {
       throw new Error("Refusing to send a Flite token to another host or environment");
     }

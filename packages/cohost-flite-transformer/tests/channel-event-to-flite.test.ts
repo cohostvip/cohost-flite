@@ -148,3 +148,13 @@ test("non-USD ticket is excluded even when event currency option is EUR", () => 
   assert.deepEqual(d.tickets.map((t) => t.ticketId), ["t2"]);
   assert.equal(d.errors[0].ticketId, "t1");
 });
+
+test("flyer: channel flyer wins, else the owner event's; only https URLs; null when none", () => {
+  const owner = { ...snap().event, flyer: { url: "https://cdn.example.com/owner.jpg" } };
+  assert.equal(buildDesiredState(snap({ event: owner }), opts).flyerUrl, "https://cdn.example.com/owner.jpg");
+  const channelEvent = { ...snap().channelEvent, flyer: { url: "https://cdn.example.com/channel.jpg" } };
+  assert.equal(buildDesiredState(snap({ event: owner, channelEvent }), opts).flyerUrl, "https://cdn.example.com/channel.jpg");
+  assert.equal(buildDesiredState(snap(), opts).flyerUrl, null);
+  assert.equal(buildDesiredState(snap({ event: { ...owner, flyer: { url: "http://cdn.example.com/x.jpg" } } }), opts).flyerUrl, null);
+  assert.equal(buildDesiredState(snap({ event: { ...owner, flyer: null } }), opts).flyerUrl, null);
+});
