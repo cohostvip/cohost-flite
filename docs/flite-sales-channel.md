@@ -78,6 +78,14 @@ Mode comes from the owner `event.status` and the snapshot:
 - The Flite environment is the connection's: a `-staging` auth key targets the sandbox API, anything else production. There is no env variable or `expectedEnv` field.
 - `sync-event` does not throw after its first successful create: later failures go to `errors`.
 
+## Flyer
+
+The desired state carries `flyerUrl`: the channel's own flyer, else the owner event's (`flyer.url`), https only, else null.
+
+- **On create** `sync-event` downloads it and uploads it as the multipart `hostFlyer` of `/create-event-partner` (PNG, JPEG, GIF or WebP, at most 10 MB). The download goes out **unsigned**: the Flite auth `sign` adds the token only on Flite's own API hosts, and strips any `authorization` header on other hosts. A flyer that cannot be downloaded or is not an image never blocks the create: the event is created without one and `warnings` says why.
+- **Allowed hosts.** The app's `network.allow` adds `firebasestorage.googleapis.com` and `storage.googleapis.com`, where Cohost keeps flyers. A flyer on any other host is refused by the runtime and reported as a warning.
+- **After create Flite cannot take a flyer** (sandbox, 2026-11-23): `/update-event-properties` ignores `hostFlyer` as a JSON array, as a string, and as a multipart upload (multipart is not parsed at all: "Correct Event ID is required"). A mapped event with no flyer on Flite therefore gets a warning on every publish run; upload the flyer in Flite by hand. A changed Cohost flyer is not propagated to an event that already has one.
+
 ## Capacity formula
 
 Per desired ticket, joined to the owner ticket by id:
