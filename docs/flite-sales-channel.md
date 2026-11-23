@@ -71,7 +71,7 @@ Mode comes from the owner `event.status` and the snapshot:
 | draft, ended, canceled, listing null, listing hidden, or `live` but not shown | `stop` |
 | `stop` or `hold` with no event mapping | `noop` (zero requests) |
 
-- `publish`: create (if unmapped) or update. Reads `/get-event-tickets-info` first. Sends `/update-event-properties` only for fields that differ. Reopens a remote ended event (`/update-event-end-toggle` ended=false). Remote tickets with no desired match get availability "false".
+- `publish`: create (if unmapped) or update. Reads `/get-event-tickets-info` first. Sends `/update-event-properties` only for fields that differ. Reopens a remote ended event (`/update-event-end-toggle` ended=false). Uploads the flyer when Flite has none (`/update-event-flyer`, see Flyer). Remote tickets with no desired match get availability "false".
 - `hold`: ticket capacity/availability updates only. No event update, end toggle or create.
 - `stop`: end toggle ended=true unless already ended, and availability "false" on each remote ticket not already "false". No creates, no registrations, no `/delete-*` calls.
 - An event-level conversion failure (no venue state/ZIP, no timezone) gives `event:null` plus an `errors` entry, and `sync-event` makes zero requests. Per-ticket problems (non-USD, donation) exclude that ticket and add an `errors` entry.
@@ -84,7 +84,7 @@ The desired state carries `flyerUrl`: the channel's own flyer, else the owner ev
 
 - **On create** `sync-event` downloads it and uploads it as the multipart `hostFlyer` of `/create-event-partner` (PNG, JPEG, GIF or WebP, at most 10 MB). The download goes out **unsigned**: the Flite auth `sign` adds the token only on Flite's own API hosts, and strips any `authorization` header on other hosts. A flyer that cannot be downloaded or is not an image never blocks the create: the event is created without one and `warnings` says why.
 - **Allowed hosts.** The app's `network.allow` adds `firebasestorage.googleapis.com` and `storage.googleapis.com`, where Cohost keeps flyers. A flyer on any other host is refused by the runtime and reported as a warning.
-- **After create Flite cannot take a flyer** (sandbox, 2026-11-23): `/update-event-properties` ignores `hostFlyer` as a JSON array, as a string, and as a multipart upload (multipart is not parsed at all: "Correct Event ID is required"). A mapped event with no flyer on Flite therefore gets a warning on every publish run; upload the flyer in Flite by hand. A changed Cohost flyer is not propagated to an event that already has one.
+- **After create** (publish on a mapped event) `sync-event` fills a missing flyer: when Flite's `hostFlyer` is empty it downloads `flyerUrl` the same way and posts it to `/update-event-flyer` (multipart `eventId` + `hostFlyer`). That endpoint is not in Flite's partner reference; it was verified on the sandbox and production APIs on 2026-11-23. `/update-event-properties` ignores `hostFlyer` in every form. A download failure is a warning and a Flite refusal is an error; neither stops the rest of the sync. A flyer already on Flite is never replaced: Flite re-hosts uploads on its CDN, so a changed Cohost flyer cannot be detected.
 
 ## Capacity formula
 

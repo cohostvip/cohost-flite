@@ -81,7 +81,9 @@ with HTTP 409 (`ALREADY_CHECKED_IN`); both are returned as `valid: false`, not e
 event without one (`hostFlyer: []`). Without a flyer, `create-event` sends the text fields only and
 needs no file access. With one, it reads the flyer through the host's `ctx.file` and sends the
 multipart body as bytes, because the sandbox carries request bodies only as text or bytes; on a host
-without file access it then fails with a clear error and sends nothing.
+without file access it then fails with a clear error and sends nothing. After create, a flyer can be
+set only through the undocumented `POST /update-event-flyer` (`/update-event-properties` ignores
+`hostFlyer`); `sync-event` uses it to fill a missing flyer (see `docs/flite-sales-channel.md`).
 
 Authentication endpoints (`partner-login`, `partner-refresh-token`, `partner-revoke-token`,
 `switch-organization-token`) are the connection's auth hooks, not actions.
