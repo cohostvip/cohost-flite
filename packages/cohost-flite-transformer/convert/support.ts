@@ -91,9 +91,8 @@ export function utcToZoned(iso: string, tz: string): { date: string; time: strin
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 }
 
-// ---- Text. Flite shows ticket descriptions as plain text (HTML appears as literal tags), and its
-// app and SEO data read event descriptions as text too, so everything sent to Flite is plain text.
-// Flite's own event HTML (imported from Flite) is read here as text as well.
+// ---- Text. Flite renders an event description as HTML, but a ticket description as plain text
+// (HTML appears as literal tags): events get cleaned HTML, tickets plain text.
 
 /** HTML 4 named entities (the set rich-text editors such as TinyMCE write): name → hex code point. */
 const NAMED_ENTITIES: Record<string, string> = Object.fromEntries(
@@ -211,6 +210,64 @@ export function toPlainText(value: string): string {
   return tidy(decodeEntities(value.replace(/\r\n?/g, "\n")));
 }
 
+export const escapeHtml = (text: string) =>
+  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+/** Plain text → HTML: blank lines separate paragraphs, a single line break becomes `<br>`. */
+export function textToHtml(text: string): string {
+  return text.trim().split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`).join("");
+}
+
+/** Tags kept (without attributes) in an event description; any other tag is unwrapped. */
+const KEEP_TAGS = new Set([
+  "p", "br", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "s", "sub", "sup", "ul", "ol",
+  "li", "blockquote", "div", "section", "article", "table", "thead", "tbody", "tfoot", "tr", "td", "th", "hr",
+  "pre", "code",
+]);
+const BLOCK_EDGE = /[ \t\r\n\f]*(<\/?(?:p|br|h[1-6]|ul|ol|li|blockquote|div|section|article|table|thead|tbody|tfoot|tr|td|th|hr|pre)>)[ \t\r\n\f]*/g;
+const EMPTY_ELEMENT = /<(p|h[1-6]|li|ul|ol|blockquote|div|section|article|strong|b|em|i|u|s)>(?:\s|&nbsp;|&#160;|&#xa0;|<br>)*<\/\1>/gi;
+
+/**
+ * Rich-text editor HTML → the HTML sent to Flite: attributes are removed (a link keeps an http(s),
+ * mailto or tel `href`), other tags such as `span` are unwrapped, scripts, styles and comments
+ * dropped, empty paragraphs removed, and whitespace between block tags removed (Flite shows the
+ * description with `white-space: pre-wrap`, so source line breaks would show). Entities stay as written.
+ */
+export function cleanHtml(html: string): string {
+  const links: string[] = [];
+  let out = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(script|style|head|title|template|iframe|object|embed|noscript)\b[\s\S]*?<\/\1\s*>/gi, "")
+    .replace(/<a\b([^>]*)>([\s\S]*?)<\/a\s*>/gi, (_, attrs: string, inner: string) => {
+      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attrs);
+      const url = href ? decodeEntities(href[1] ?? href[2] ?? href[3]).trim() : "";
+      if (!/^(https?:\/\/|mailto:|tel:)/i.test(url)) return inner;
+      links.push(url);
+      return `\u0001${links.length - 1}\u0002${inner}\u0001/\u0002`;
+    })
+    .replace(/<\s*(\/?)\s*([a-z][a-z0-9]*)\b[^>]*>/gi, (_, close: string, raw: string) => {
+      const name = raw.toLowerCase();
+      if (!KEEP_TAGS.has(name)) return "";
+      if (name === "br" || name === "hr") return close ? "" : `<${name}>`;
+      return `<${close}${name}>`;
+    })
+    .replace(/\u0001(\d+)\u0002/g, (_, i: string) => `<a href="${escapeHtml(links[Number(i)])}">`)
+    .replace(/\u0001\/\u0002/g, "</a>")
+    .replace(/[ \t\r\n\f]+/g, " ")
+    .replace(BLOCK_EDGE, "$1");
+  for (let previous = ""; previous !== out; ) {
+    previous = out;
+    out = out.replace(EMPTY_ELEMENT, "");
+  }
+  return out.replace(/^(?:<br>)+|(?:<br>)+$/g, "").trim();
+}
+
+/** Any Cohost or Flite text field → event-description HTML: HTML is cleaned, plain text becomes paragraphs. */
+export function toHtml(value: string): string {
+  return HAS_TAG.test(value) ? cleanHtml(value) : textToHtml(toPlainText(value));
+}
+
 /** The longest description the Flite app accepts on create and update (`text()` in packages/flite/lib/fields.ts). */
 export const FLITE_TEXT_MAX = 5000;
 
@@ -223,6 +280,28 @@ export function clipText(text: string, max: number): string {
   const space = Math.max(head.lastIndexOf(" "), head.lastIndexOf("\n"));
   const cut = paragraph >= floor ? paragraph : space >= floor ? space : head.length;
   return `${head.slice(0, cut).trimEnd()}…`;
+}
+
+/**
+ * HTML parts (blocks) joined in order, leaving out any that would pass `max`. When the first part
+ * alone is too long it becomes plain-text paragraphs, clipped at a word break to fit.
+ */
+export function fitHtml(parts: string[], max: number): string {
+  let html = "";
+  for (const part of parts) {
+    if (html.length + part.length <= max) html += part;
+    else if (!html) html = clipHtml(part, max);
+  }
+  return html;
+}
+
+function clipHtml(html: string, max: number): string {
+  const text = toPlainText(html);
+  for (let budget = max; budget > 20; budget = Math.floor(budget * 0.9)) {
+    const out = textToHtml(clipText(text, budget));
+    if (out.length <= max) return out;
+  }
+  return "";
 }
 
 export function summarize(text: string, max = 280): string {

@@ -50,7 +50,7 @@ export interface CohostEvent {
   organizerId: string | null;
   name: string;
   summary: string;
-  description?: { text?: string; blocks?: unknown[] | null };
+  description?: { html?: string; text?: string; blocks?: unknown[] | null };
   /** IANA time zone. */
   tz: string;
   /** ISO 8601 instants. */

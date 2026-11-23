@@ -3,7 +3,7 @@
 import { cohostEventToFlite } from "../convert/event.ts";
 import { cohostTicketToFlite } from "../convert/ticket.ts";
 import type { CohostEvent, CohostTicket } from "../convert/cohost-types.ts";
-import { parseAmount, summarize, toPlainText } from "../convert/support.ts";
+import { escapeHtml, FLITE_TEXT_MAX, fitHtml, parseAmount, summarize, textToHtml, toHtml, toPlainText } from "../convert/support.ts";
 
 export type SyncMode = "publish" | "hold" | "stop" | "noop";
 export type FliteEnv = "sandbox" | "production";
@@ -86,51 +86,57 @@ function decideMode(snapshot: ChannelSnapshot): SyncMode {
   return mode;
 }
 
-/** A multipart text (`{ html, text, md }`) as plain text: html first, then text, then md. */
-function multipartText(value: unknown): string {
+/** A multipart text (`{ html, text, md }`) as event-description HTML: html first, then text, then md. */
+function multipartHtml(value: unknown): string {
   const content = rec(value);
   for (const key of ["html", "text", "md"]) {
-    const text = typeof content[key] === "string" ? toPlainText(content[key] as string) : "";
-    if (text) return text;
+    const html = typeof content[key] === "string" ? toHtml(content[key] as string) : "";
+    if (toPlainText(html)) return html;
   }
-  return typeof value === "string" ? toPlainText(value) : "";
+  return typeof value === "string" ? toHtml(value) : "";
 }
 
-/** One content block as plain text: a rich-text block's content, or an FAQ's questions and answers. */
-function blockText(block: Rec): string {
+/** Plain text on one line, HTML-escaped. */
+const inline = (text: string) => escapeHtml(text.replace(/\s+/g, " "));
+
+/** One content block as HTML: a rich-text block's content, or an FAQ's questions and answers. */
+function blockHtml(block: Rec): string {
   const data = rec(block.data);
   if (Array.isArray(data.items)) {
     return data.items.map(rec)
       .sort((a, b) => (num(a.order) ?? 0) - (num(b.order) ?? 0))
-      .map((item) => [toPlainText(str(item.question)), toPlainText(str(item.answer))].filter(Boolean).join("\n"))
-      .filter(Boolean)
-      .join("\n\n");
+      .map((item) => {
+        const question = toPlainText(str(item.question));
+        return (question ? `<p><strong>${inline(question)}</strong></p>` : "") + toHtml(str(item.answer));
+      })
+      .join("");
   }
-  return data.content === undefined ? "" : multipartText(data.content);
+  return data.content === undefined ? "" : multipartHtml(data.content);
 }
 
 /**
- * The Flite description, as plain text: every live content block of the channel (else of the owner
- * event) in order, the `description` block first and untitled, each other one under its title.
- * Without block text: the owner description, else summary, else name.
+ * The Flite event description, as HTML: every live content block of the channel (else of the owner
+ * event) in order, the `description` block first and untitled, each other one under an `<h3>` title;
+ * blocks that would pass Flite's 5000 characters are left out. Without block content: the owner
+ * description, else summary, else name.
  */
 function describe(snapshot: ChannelSnapshot, name: string): string {
   const channelBlocks = snapshot.channelEvent?.contentBlocks;
   const blocks = Array.isArray(channelBlocks) && channelBlocks.length ? channelBlocks : snapshot.event?.contentBlocks;
-  const parts: Array<{ first: boolean; order: number; text: string }> = [];
+  const parts: Array<{ first: boolean; order: number; html: string }> = [];
   for (const block of Array.isArray(blocks) ? blocks.map(rec) : []) {
     if (block.status !== undefined && block.status !== "live") continue;
-    const text = blockText(block);
-    if (!text) continue;
+    const html = blockHtml(block);
+    if (!toPlainText(html)) continue;
     const first = block.designation === "description";
     const title = first ? "" : toPlainText(str(block.title) || str(rec(block.data).title));
-    parts.push({ first, order: num(block.order) ?? 0, text: title ? `${title}\n${text}` : text });
+    parts.push({ first, order: num(block.order) ?? 0, html: (title ? `<h3>${inline(title)}</h3>` : "") + html });
   }
   parts.sort((a, b) => Number(b.first) - Number(a.first) || a.order - b.order);
-  const text = parts.map((part) => part.text).join("\n\n");
-  if (text) return text;
+  const html = fitHtml(parts.map((part) => part.html), FLITE_TEXT_MAX);
+  if (html) return html;
   const owner = snapshot.event;
-  return multipartText(owner.description) || toPlainText(str(owner.summary)) || name;
+  return multipartHtml(owner.description) || textToHtml(toPlainText(str(owner.summary)) || name);
 }
 
 function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
@@ -142,14 +148,15 @@ function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
   if (!str(address.region)) throw new Error("event venue has no state");
   if (!str(address.postal_code)) throw new Error("event venue has no ZIP code");
   const name = str(snapshot.channelEvent?.name) || str(owner.name);
-  const description = describe(snapshot, name);
+  const html = describe(snapshot, name);
+  const text = toPlainText(html);
   const cohost = {
     id: snapshot.eventId,
     companyId: snapshot.companyId,
     organizerId: null,
     name,
-    summary: summarize(description) || name,
-    description: { text: description },
+    summary: summarize(text) || name,
+    description: { html, text },
     tz,
     start: str(owner.start),
     end: str(owner.end),

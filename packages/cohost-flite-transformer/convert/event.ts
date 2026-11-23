@@ -4,14 +4,15 @@ import { resourceContext, type SourceContext } from "../lib/context.ts";
 import {
   API_VERSION,
   APP_SOURCE,
-  clipText,
   cohostCurrency,
+  fitHtml,
   FLITE_TEXT_MAX,
   fliteMeta,
   idFrom,
   stateCode,
   stateName,
   summarize,
+  toHtml,
   toPlainText,
   utcToZoned,
   zonedToUtc,
@@ -145,10 +146,11 @@ export function cohostEventToFlite(event: CohostEvent): FliteEventProperties {
     ? { date: schedule.endDate, time: schedule.endTime }
     : utcToZoned(event.end, event.tz);
   const address = event.location?.address;
-  // Flite gets plain text; its own description (HTML from its editor) is kept while the text is unchanged.
-  const text = clipText(toPlainText(event.description?.text ?? event.summary ?? ""), FLITE_TEXT_MAX);
+  // Flite renders the event description as HTML; its own HTML is kept while the text is unchanged.
+  const source = [event.description?.html, event.description?.text, event.summary].find((v) => typeof v === "string" && v.trim());
+  const html = fitHtml([toHtml(source ?? "")], FLITE_TEXT_MAX);
   const original = typeof flite.description === "string" ? flite.description : undefined;
-  const description = original !== undefined && toPlainText(original) === text ? original : text;
+  const description = original !== undefined && toPlainText(original) === toPlainText(html) ? original : html;
   const eventId = typeof flite.originalId === "string" ? flite.originalId : idFrom(event.refId ?? event.urn, "events");
 
   return {

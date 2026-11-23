@@ -62,18 +62,18 @@ test("mode table: noop rows", () => {
 test("publish event: name, description fallbacks, dates, venue", () => {
   const d = buildDesiredState(snap(), opts);
   assert.equal(d.event!.eventName, "Channel Name");
-  assert.equal(d.event!.description, "Owner desc");
+  assert.equal(d.event!.description, "<p>Owner desc</p>");
   assert.equal(d.event!.startDate, "2027-04-09");
   assert.equal(d.event!.startTime, "22:00");
   assert.equal(d.event!.state, "New York");
   assert.equal(d.event!.zipCode, "10001");
   assert.equal(d.event!.showEvent, "true");
   const block = { channelEvent: { name: "N", contentBlocks: [{ designation: "description", data: { content: { html: "<p>Blk</p>" } } }] } };
-  assert.equal(buildDesiredState(snap(block), opts).event!.description, "Blk");
+  assert.equal(buildDesiredState(snap(block), opts).event!.description, "<p>Blk</p>");
   const o = snap().event;
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: { html: "<p>Owner &amp; html</p>" } } }), opts).event!.description, "Owner & html");
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: {} } }), opts).event!.description, "Owner summary");
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: {}, summary: "" } }), opts).event!.description, "Channel Name");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: { html: "<p>Owner &amp; html</p>" } } }), opts).event!.description, "<p>Owner &amp; html</p>");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: {} } }), opts).event!.description, "<p>Owner summary</p>");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: {}, summary: "" } }), opts).event!.description, "<p>Channel Name</p>");
 });
 
 const blocks = [
@@ -88,24 +88,39 @@ const blocks = [
     data: { content: { html: "<h3>Two Spaces.</h3>\n<p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p>" } } },
 ];
 
-test("publish event: the description is plain text from every live content block, the description block first", () => {
+test("publish event: the description is HTML from every live content block, the description block first", () => {
   const d = buildDesiredState(snap({ channelEvent: { name: "N", contentBlocks: blocks } }), opts);
-  assert.equal(d.event!.description, [
-    "Two Spaces.\n\nNew Year’s Eve — 74Wythe.",
-    "Performers\nMusic: House | Top 40",
-    "Menu\nFood will not be served",
-    "FAQ\nCoat check?\nYes & free\n\nAge?\n21+",
-  ].join("\n\n"));
+  assert.equal(d.event!.description,
+    "<h3>Two Spaces.</h3><p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p>" +
+    "<h3>Performers</h3><p>Music: House | Top 40</p>" +
+    "<h3>Menu</h3><p>Food will not be served</p>" +
+    "<h3>FAQ</h3><p><strong>Coat check?</strong></p><p>Yes &amp; free</p><p><strong>Age?</strong></p><p>21+</p>");
   // No channel blocks: the owner event's blocks.
   const owner = buildDesiredState(snap({ event: { ...snap().event, contentBlocks: blocks.slice(4) } }), opts);
-  assert.equal(owner.event!.description, "Two Spaces.\n\nNew Year’s Eve — 74Wythe.\n\nPerformers\nMusic: House | Top 40");
+  assert.equal(owner.event!.description, "<h3>Two Spaces.</h3><p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p><h3>Performers</h3><p>Music: House | Top 40</p>");
 });
 
-test("publish event: a description over Flite's 5000 characters is clipped at a word boundary", () => {
-  const long = Array.from({ length: 1200 }, (_, i) => `word${i}`).join(" ");
-  const d = buildDesiredState(snap({ event: { ...snap().event, description: { text: long } } }), opts);
-  assert.ok(d.event!.description.length <= 5000);
-  assert.match(d.event!.description, /word\d+…$/);
+test("publish event: editor attributes, spans and empty paragraphs are removed from the HTML", () => {
+  const html = '<h3 class="PDq2pG" dir="auto" data-start="396">Two Spaces</h3>\n<p dir="auto" style="color: red">Doors <span data-x="1">at 9</span>' +
+    '<br data-end="2">late <a href="https://example.com/x" target="_blank" onclick="x()">tickets</a> <a href="javascript:alert(1)">bad</a></p>\n' +
+    '<p>&nbsp;</p>\n<section data-y="1"><p><br></p></section><script>alert(1)</script><!-- note -->';
+  const block = { channelEvent: { name: "N", contentBlocks: [{ designation: "description", status: "live", data: { content: { html } } }] } };
+  assert.equal(buildDesiredState(snap(block), opts).event!.description,
+    '<h3>Two Spaces</h3><p>Doors at 9<br>late <a href="https://example.com/x">tickets</a> bad</p>');
+});
+
+test("publish event: HTML over Flite's 5000 characters drops trailing blocks, then falls back to clipped paragraphs", () => {
+  const para = (i: number) => `<p>${"word ".repeat(150)}${i}</p>`;
+  const big = (n: number) => Array.from({ length: n }, (_, i) => para(i)).join("");
+  const desc = (html: string, extra: unknown[] = []) => buildDesiredState(snap({ channelEvent: { name: "N", contentBlocks: [
+    { designation: "description", status: "live", order: 1, data: { content: { html } } }, ...extra,
+  ] } }), opts).event!.description;
+  const fits = desc(big(5), [{ title: "Menu", status: "live", order: 2, data: { content: { text: "x".repeat(2000) } } }]);
+  assert.equal(fits, big(5)); // the Menu block would pass 5000, so it is left out
+  const clipped = desc(big(8));
+  assert.ok(clipped.length <= 5000, String(clipped.length));
+  assert.match(clipped, /^<p>word word/);
+  assert.match(clipped, /…<\/p>$/);
 });
 
 test("publish tickets: HTML ticket descriptions become bullet lines", () => {

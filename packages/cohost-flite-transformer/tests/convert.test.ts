@@ -175,7 +175,7 @@ test("a Cohost-authored event converts to Flite create properties", () => {
   });
   assert.deepEqual(props, {
     eventName: "Rooftop Night",
-    description: "Rooftop party.\n\nBring <ID> & a friend.",
+    description: "<p>Rooftop party.</p><p>Bring &lt;ID&gt; &amp; a friend.</p>",
     venueName: "The Roof",
     venueLocation: "9 Sky Rd",
     city: "Los Angeles",
@@ -199,10 +199,12 @@ test("a captured event ending in the DST gap keeps its Flite times until resched
   assert.deepEqual([moved.endDate, moved.endTime, moved.startTime], ["2027-03-14", "04:00", flite.startTime]);
 });
 
-test("an edited Cohost description replaces Flite's HTML with plain text", () => {
+test("an edited Cohost description replaces Flite's HTML", () => {
   const cohost = fliteEventToCohost(source, event);
-  const back = cohostEventToFlite({ ...cohost, description: { text: "New copy\n\nSecond &amp; last" } });
-  assert.equal(back.description, "New copy\n\nSecond & last");
+  const back = cohostEventToFlite({ ...cohost, description: { text: "New copy\nline two\n\nSecond &amp; last" } });
+  assert.equal(back.description, "<p>New copy<br>line two</p><p>Second &amp; last</p>");
+  const html = cohostEventToFlite({ ...cohost, description: { html: '<p dir="auto">Rich &rsquo;copy&rsquo;</p>\n<p>&nbsp;</p>', text: "ignored" } });
+  assert.equal(html.description, "<p>Rich &rsquo;copy&rsquo;</p>");
 });
 
 test("a plain-text Flite description keeps its paragraphs on import and is sent back unchanged", () => {
