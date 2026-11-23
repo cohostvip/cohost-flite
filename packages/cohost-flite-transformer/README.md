@@ -38,16 +38,19 @@ the anonymized live captures and the documented examples.
   `Approved` → `live`, `Pending` → `queued`, anything else → `draft`. `public` is `Approved` and
   `showEvent`.
 - **Address.** Flite state names (`New York`) become region codes (`NY`), and back. Country is `US`.
-- **Description.** Flite gets plain text only: its ticket descriptions show HTML as literal tags,
-  and its app and search data read event descriptions as text. Cohost HTML (from the rich-text
-  editor) becomes text: blocks are paragraphs, `<br>` a line break, list items `• ` lines (`1. ` in
-  an ordered list), and every named (HTML 4) and numeric entity is decoded (`&rsquo;` → `’`). A
-  plain-text value keeps its line breaks. Text over Flite's 5000 characters is cut at a word break
-  with `…`. Flite's own HTML is read as text, and written back unchanged unless the text was edited.
+- **Description.** Flite renders an event description as HTML but a ticket description as plain
+  text. Event descriptions are sent as cleaned HTML: attributes removed (links keep an http(s),
+  mailto or tel `href`), `span` and other unknown tags unwrapped, scripts, styles, comments and empty
+  paragraphs dropped, and no whitespace between block tags (Flite shows it with `pre-wrap`); plain
+  text becomes `<p>` paragraphs. Ticket descriptions become text: blocks are paragraphs, `<br>` a
+  line break, list items `• ` lines (`1. ` in an ordered list), and every named (HTML 4) and numeric
+  entity is decoded. Both are kept within Flite's 5000 characters. Flite's own event HTML is written
+  back unchanged unless the text was edited.
 - **Channel event description** (`channel-event-to-flite`). Every live content block of the channel
   (or, with none, of the owner event) in order: the `description` block first and untitled, each
-  other one under its title; an FAQ block as its questions and answers. Without block text: the owner
-  description, else summary, else the event name. Ticket descriptions are converted the same way.
+  other one under an `<h3>` title; an FAQ block as its questions and answers. A block that would pass
+  5000 characters is left out. Without block content: the owner description, else summary, else
+  the event name.
 - **Ticket availability.** `true` → `live`, or `sold-out` once `sold >= capacity`; `hide` →
   `hidden`; `soon` → `draft`; `false` → `unavailable`. Sold-out writes back as `true`, since Flite
   derives it.
