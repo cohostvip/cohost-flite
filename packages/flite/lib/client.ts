@@ -6,6 +6,7 @@ import type {
   FliteDeletedTicket,
   FliteEvent,
   FliteEventEndState,
+  FliteEventFlyerUpdate,
   FliteEventListPagination,
   FliteEventSummary,
   FliteEventUpdate,
@@ -221,6 +222,19 @@ export class FliteClient {
   async updateEvent(body: Record<string, unknown>): Promise<FliteEventUpdate> {
     const result = await this.request("/update-event-properties", { method: "POST", body });
     return object(result.data) as unknown as FliteEventUpdate;
+  }
+
+  /**
+   * Sets or replaces an existing event's flyer (multipart `eventId` + `hostFlyer`). Undocumented in
+   * Flite's partner reference; verified on the sandbox and production APIs, 2026-11-23.
+   * `/update-event-properties` ignores `hostFlyer` in every form.
+   */
+  async updateEventFlyer(eventId: string, flyer: Omit<MultipartFile, "name">): Promise<FliteEventFlyerUpdate> {
+    const result = await this.request("/update-event-flyer", {
+      method: "POST",
+      raw: multipart({ eventId: resourceId(eventId, "events") }, [{ ...flyer, name: "hostFlyer" }]),
+    });
+    return object(result.data ?? {}) as unknown as FliteEventFlyerUpdate;
   }
 
   async setEventEnded(eventId: string, ended: boolean): Promise<FliteEventEndState> {

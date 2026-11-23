@@ -103,10 +103,10 @@ export default {
       if (remote.isEventEnd) {
         await attempt("reopen-event", eventId, { ended: false }, () => client.setEventEnded(eventId, false));
       }
+      // Fill a missing flyer only: Flite re-hosts uploads, so a changed Cohost flyer cannot be detected.
       if (desired.flyerUrl && !(remote.hostFlyer ?? []).length) {
-        out.warnings.push(
-          `event ${eventId} has no flyer on Flite: Flite's API accepts a flyer only when an event is created, so upload it in Flite`,
-        );
+        const flyer = await downloadFlyer(client, desired.flyerUrl, out);
+        if (flyer) await attempt("update-event-flyer", eventId, {}, () => client.updateEventFlyer(eventId, flyer));
       }
       const changed = diffEvent(desired.event, remote);
       if (Object.keys(changed).length) {

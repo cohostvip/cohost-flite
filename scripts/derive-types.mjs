@@ -36,6 +36,9 @@ const ROOTS = [
     [live, "event-1-with-tickets", "data"], [live, "staging-event-with-tickets", "data"], [docs, "event-with-tickets", "data"],
   ]],
   ["FliteCreatedEvent", "POST /api/create-event-partner", [[live, "staging-event-created", "data"]]],
+  ["FliteEventFlyerUpdate", "POST /api/update-event-flyer (undocumented by Flite)", [
+    [live, "staging-event-flyer-updated", "data"],
+  ]],
   ["FliteEventUpdate", "POST /api/update-event-properties", [
     [live, "staging-event-updated", "data"], [live, "staging-event-update-unchanged", "data"],
   ]],

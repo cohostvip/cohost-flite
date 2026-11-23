@@ -1,0 +1,15 @@
+{
+  "status": 200,
+  "body": {
+    "success": true,
+    "message": "Event flyer updated successfully",
+    "data": {
+      "_id": "65f1e0000000000000000014",
+      "eventId": "65f1e0000000000000000014",
+      "eventName": "Sample Event 10",
+      "hostFlyer": [
+        "https://example.com/flyer/flyer-00000000-0000-4000-8000-000000000001.jpg"
+      ]
+    }
+  }
+}

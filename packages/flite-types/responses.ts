@@ -150,6 +150,14 @@ export interface FliteCreatedEvent {
   ebEventId: string;
 }
 
+/** POST /api/update-event-flyer (undocumented by Flite). Derived from 1 sample(s): live. */
+export interface FliteEventFlyerUpdate {
+  _id: string;
+  eventId: string;
+  eventName: string;
+  hostFlyer: string[];
+}
+
 /** POST /api/update-event-properties. Derived from 2 sample(s): live. */
 export interface FliteEventUpdate {
   eventId: string;

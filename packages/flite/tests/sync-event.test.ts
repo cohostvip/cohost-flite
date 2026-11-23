@@ -389,13 +389,41 @@ test("a flyer that cannot be downloaded or is not an image never blocks the crea
   }
 });
 
-test("mapped event without a Flite flyer: warn that Flite cannot add one after create; no download", async () => {
-  const { ctx, requests } = context([remoteEvent({ hostFlyer: [] })], true);
+test("mapped event without a Flite flyer: the flyer is uploaded with /update-event-flyer", async () => {
+  const { ctx, requests } = context([remoteEvent({ hostFlyer: [] }), jpeg(), { success: true, data: { _id: "fe1", hostFlyer: ["https://cdn/x.jpg"] } }], true);
   const out = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, ctx);
-  assert.deepEqual(paths(requests), ["/get-event-tickets-info"]);
+  assert.deepEqual(paths(requests), ["/get-event-tickets-info", "/v0/b/x/o/flyer.jpg", "/update-event-flyer"]);
+  assert.equal(new Headers(requests[1].init.headers).get("authorization"), null);
+  const form = text(requests[2]);
+  assert.match(form, /name="eventId"\r\n\r\nfe1\r\n/);
+  assert.match(form, /name="hostFlyer"; filename="flyer\.jpg"\r\nContent-Type: image\/jpeg/);
+  assert.deepEqual(out.operations.map((o) => [o.op, o.target]), [["update-event-flyer", "fe1"]]);
+  assert.deepEqual(out.warnings, []);
+  assert.deepEqual(out.errors, []);
+});
+
+test("mapped event that already has a Flite flyer, or no desired flyer: no download, no flyer write", async () => {
+  for (const [hostFlyer, flyerUrl] of [[["https://d3skqfvgyt6f3j.cloudfront.net/flyer/x.jpg"], FLYER], [[], null]] as const) {
+    const { ctx, requests } = context([remoteEvent({ hostFlyer })], true);
+    const out = await syncEvent.execute({ desired: mapped({ flyerUrl }) }, ctx);
+    assert.deepEqual(paths(requests), ["/get-event-tickets-info"]);
+    assert.deepEqual([out.warnings, out.errors], [[], []]);
+  }
+});
+
+test("mapped event: a flyer that cannot be downloaded is a warning, and the rest of the sync still runs", async () => {
+  const { ctx, requests } = context([remoteEvent({ hostFlyer: [], eventName: "old" }), new Response("nope", { status: 404 }), { success: true, data: {} }], true);
+  const out = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, ctx);
+  assert.deepEqual(paths(requests), ["/get-event-tickets-info", "/v0/b/x/o/flyer.jpg", "/update-event-properties"]);
   assert.equal(out.warnings.length, 1);
-  assert.match(out.warnings[0], /flyer/);
-  const withFlyer = context([remoteEvent({ hostFlyer: ["https://d3skqfvgyt6f3j.cloudfront.net/flyer/x.jpg"] })], true);
-  const ok = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, withFlyer.ctx);
-  assert.deepEqual(ok.warnings, []);
+  assert.match(out.warnings[0], /flyer not uploaded: HTTP 404/);
+  assert.deepEqual(out.errors, []);
+});
+
+test("mapped event: Flite refusing the flyer is an error, and the rest of the sync still runs", async () => {
+  const { ctx, requests } = context([remoteEvent({ hostFlyer: [], eventName: "old" }), jpeg(), new Response(JSON.stringify({ success: false, message: "bad" }), { status: 400 }), { success: true, data: {} }], true);
+  const out = await syncEvent.execute({ desired: mapped({ flyerUrl: FLYER }) }, ctx);
+  assert.deepEqual(paths(requests).slice(2), ["/update-event-flyer", "/update-event-properties"]);
+  assert.equal(out.errors.length, 1);
+  assert.match(out.errors[0], /^update-event-flyer fe1: /);
 });
