@@ -62,17 +62,55 @@ test("mode table: noop rows", () => {
 test("publish event: name, description fallbacks, dates, venue", () => {
   const d = buildDesiredState(snap(), opts);
   assert.equal(d.event!.eventName, "Channel Name");
-  assert.equal(d.event!.description, "<p>Owner desc</p>");
+  assert.equal(d.event!.description, "Owner desc");
   assert.equal(d.event!.startDate, "2027-04-09");
   assert.equal(d.event!.startTime, "22:00");
   assert.equal(d.event!.state, "New York");
   assert.equal(d.event!.zipCode, "10001");
   assert.equal(d.event!.showEvent, "true");
   const block = { channelEvent: { name: "N", contentBlocks: [{ designation: "description", data: { content: { html: "<p>Blk</p>" } } }] } };
-  assert.equal(buildDesiredState(snap(block), opts).event!.description, "<p>Blk</p>");
+  assert.equal(buildDesiredState(snap(block), opts).event!.description, "Blk");
   const o = snap().event;
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: {} } }), opts).event!.description, "<p>Owner summary</p>");
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: {}, summary: "" } }), opts).event!.description, "<p>Channel Name</p>");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: { html: "<p>Owner &amp; html</p>" } } }), opts).event!.description, "Owner & html");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: {} } }), opts).event!.description, "Owner summary");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: {}, summary: "" } }), opts).event!.description, "Channel Name");
+});
+
+const blocks = [
+  { id: "menu", type: "richtext", order: 3, title: "Menu", status: "live", data: { content: { text: "<p>Food will not be served</p>\n<p>&nbsp;</p>" } } },
+  { id: "gallery", type: "gallery", order: 4, title: "Photos", status: "live", data: { images: [{ url: "https://x/y.jpg", order: 1 }] } },
+  { id: "secret", type: "richtext", order: 0, title: "Hidden", status: "hidden", data: { content: { text: "not public" } } },
+  { id: "faq", type: "faq", order: 5, title: "FAQ", status: "live", data: { items: [
+    { question: "Age?", answer: "<p>21+</p>", order: 2 }, { question: "Coat check?", answer: "Yes &amp; free", order: 1 },
+  ] } },
+  { id: "performers", type: "richtext", order: 2, title: "Performers", status: "live", data: { content: { text: "Music: House | Top 40" } } },
+  { id: "details", designation: "description", type: "richtext", order: 9, title: "Details", status: "live",
+    data: { content: { html: "<h3>Two Spaces.</h3>\n<p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p>" } } },
+];
+
+test("publish event: the description is plain text from every live content block, the description block first", () => {
+  const d = buildDesiredState(snap({ channelEvent: { name: "N", contentBlocks: blocks } }), opts);
+  assert.equal(d.event!.description, [
+    "Two Spaces.\n\nNew Year’s Eve — 74Wythe.",
+    "Performers\nMusic: House | Top 40",
+    "Menu\nFood will not be served",
+    "FAQ\nCoat check?\nYes & free\n\nAge?\n21+",
+  ].join("\n\n"));
+  // No channel blocks: the owner event's blocks.
+  const owner = buildDesiredState(snap({ event: { ...snap().event, contentBlocks: blocks.slice(4) } }), opts);
+  assert.equal(owner.event!.description, "Two Spaces.\n\nNew Year’s Eve — 74Wythe.\n\nPerformers\nMusic: House | Top 40");
+});
+
+test("publish event: a description over Flite's 5000 characters is clipped at a word boundary", () => {
+  const long = Array.from({ length: 1200 }, (_, i) => `word${i}`).join(" ");
+  const d = buildDesiredState(snap({ event: { ...snap().event, description: { text: long } } }), opts);
+  assert.ok(d.event!.description.length <= 5000);
+  assert.match(d.event!.description, /word\d+…$/);
+});
+
+test("publish tickets: HTML ticket descriptions become bullet lines", () => {
+  const d = buildDesiredState(snap({ channelTickets: [{ ...snap().channelTickets[0], description: '<ul>\n<li>Admits 1</li>\n<li dir="ltr"><p role="presentation">Open bar &amp; DJ</p></li>\n</ul>' }] }), opts);
+  assert.equal(d.tickets[0].fields.description, "• Admits 1\n• Open bar & DJ");
 });
 
 test("publish tickets: capacity formula, availability, salesEnabled, errors", () => {

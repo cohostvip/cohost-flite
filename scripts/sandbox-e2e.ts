@@ -532,7 +532,7 @@ const R7: RowFn = async (m) => {
   const newName = `${sc.name}-renamed`;
   const newDesc = `${m.tag} r7 changed description`;
   return {
-    expected: `${sc.name}: after the first publish the owner renames the event to ${newName} and changes its description to "${newDesc}" => run succeeds env=sandbox with an update-event operation (no create), the Flite readback has eventName and description equal to the new values (description stored by Flite as <p>text</p>), same Flite event id, exactly 1 Flite event named ${newName}; then the owner description is emptied => the observed behaviour (Cohost reply, run ops/errors, Flite description) is RECORDED, not asserted; ${SYNTH}`,
+    expected: `${sc.name}: after the first publish the owner renames the event to ${newName} and changes its description to "${newDesc}" => run succeeds env=sandbox with an update-event operation (no create), the Flite readback has eventName and description equal to the new values (description stored by Flite as the plain text sent), same Flite event id, exactly 1 Flite event named ${newName}; then the owner description is emptied => the observed behaviour (Cohost reply, run ops/errors, Flite description) is RECORDED, not asserted; ${SYNTH}`,
     step: async () => {
       const p: string[] = [];
       const f = await firstPublish(m, sc, p);
@@ -546,7 +546,7 @@ const R7: RowFn = async (m) => {
       if (ops(a.out).some((o) => o.startsWith("create"))) p.push(`rename created: ${ops(a.out).join(",")}`);
       const ra = compact(await m.fliteEvent(f.fliteId));
       if (ra.eventName !== newName) p.push(`eventName=${ra.eventName}`);
-      if (String(ra.description ?? "").trim() !== `<p>${newDesc}</p>`) p.push(`description=${JSON.stringify(ra.description)}`); // Flite stores the text as <p>…</p> (the converter's textToHtml)
+      if (String(ra.description ?? "").trim() !== newDesc) p.push(`description=${JSON.stringify(ra.description)}`); // the converter sends plain text; Flite stores it verbatim
       const cNew = await m.fliteCount(newName);
       if (cNew !== 1) p.push(`count(${newName})=${cNew}`);
       // empty description: recorded only

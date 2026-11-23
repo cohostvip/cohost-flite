@@ -13,7 +13,7 @@ import type {
 import { cohostEventToFlite, fliteEventToCohost } from "../convert/event.ts";
 import { cohostTicketToFlite, fliteTicketToCohost } from "../convert/ticket.ts";
 import { cohostOrderToFlite, fliteOrderToCohost } from "../convert/order.ts";
-import { htmlToText, stateCode, stateName, utcToZoned, zonedToUtc } from "../convert/support.ts";
+import { clipText, htmlToText, stateCode, stateName, toPlainText, utcToZoned, zonedToUtc } from "../convert/support.ts";
 import fliteToCohostAction from "../actions/flite-to-cohost.ts";
 import cohostToFliteDataAction from "../actions/cohost-to-flite-data.ts";
 import { event, order, source } from "../../../tests/fixtures.ts";
@@ -61,6 +61,40 @@ test("US states map between Flite names and Cohost codes", () => {
 
 test("HTML descriptions become plain text", () => {
   assert.equal(htmlToText("<p>Doors &amp; music</p><p>Line one<br>line two&nbsp;&#8212; late</p>"), "Doors & music\n\nLine one\nline two — late");
+});
+
+test("rich-text editor HTML: headings, attributes, inline tags and typographic entities", () => {
+  const html = '<h3 class="x" dir="auto" data-start="1">Two Spaces. One Destination.</h3>\n' +
+    '<p dir="auto">Celebrate New Year&rsquo;s Eve at <strong data-start="2">Superior</strong>, inside Williamsburg&rsquo;s 74Wythe.</p>\n' +
+    "<p>The Room &mdash; and The Roof &ndash; &ldquo;quoted&rdquo; &hellip; caf&eacute; &Eacute;T&Eacute; &#x2019; &#8217; &copy;</p>\n<p>&nbsp;</p>";
+  assert.equal(htmlToText(html),
+    "Two Spaces. One Destination.\n\n" +
+    "Celebrate New Year’s Eve at Superior, inside Williamsburg’s 74Wythe.\n\n" +
+    "The Room — and The Roof – “quoted” … café ÉTÉ ’ ’ ©");
+});
+
+test("lists become bullet or numbered lines, also when items wrap their text in paragraphs", () => {
+  const ul = '<ul>\n<li>Admits 1 guest</li>\n<li dir="ltr" style="line-height: 1;" aria-level="1">\n<p dir="ltr" role="presentation">Multi-Hour Open Bar</p>\n</li>\n<li>Must be 21+</li>\n</ul>';
+  assert.equal(htmlToText(ul), "• Admits 1 guest\n• Multi-Hour Open Bar\n• Must be 21+");
+  assert.equal(htmlToText("<p>Includes:</p><ol><li>Entry</li><li>Toast</li></ol><p>See you there</p>"), "Includes:\n\n1. Entry\n2. Toast\n\nSee you there");
+  assert.equal(htmlToText("<ul><li>Outer<ul><li>Inner</li></ul></li><li>Next</li></ul>"), "• Outer\n• Inner\n• Next");
+});
+
+test("entities: escaped markup stays text, unknown names stay as written, scripts and comments vanish", () => {
+  assert.equal(htmlToText("<p>Bring &lt;ID&gt; &amp; a friend &bogus; &#0;</p><!-- note --><script>x()</script>"), "Bring <ID> & a friend &bogus; &#0;");
+});
+
+test("toPlainText: plain text keeps its line breaks; only HTML is parsed", () => {
+  assert.equal(toPlainText("Line one\r\nLine two\n\n\n\nNew  paragraph &amp; more "), "Line one\nLine two\n\nNew paragraph & more");
+  assert.equal(toPlainText("Love it <3 & more"), "Love it <3 & more");
+  assert.equal(toPlainText("<p>Food will not be served</p>\n<p>&nbsp;</p>"), "Food will not be served");
+});
+
+test("clipText: long text is cut at a word boundary with an ellipsis, within the limit", () => {
+  assert.equal(clipText("short", 10), "short");
+  const clipped = clipText("alpha beta gamma delta", 12);
+  assert.equal(clipped, "alpha beta…");
+  assert.ok(clipped.length <= 12);
 });
 
 // ---- events
@@ -141,7 +175,7 @@ test("a Cohost-authored event converts to Flite create properties", () => {
   });
   assert.deepEqual(props, {
     eventName: "Rooftop Night",
-    description: "<p>Rooftop party.</p><p>Bring &lt;ID&gt; &amp; a friend.</p>",
+    description: "Rooftop party.\n\nBring <ID> & a friend.",
     venueName: "The Roof",
     venueLocation: "9 Sky Rd",
     city: "Los Angeles",
@@ -165,10 +199,23 @@ test("a captured event ending in the DST gap keeps its Flite times until resched
   assert.deepEqual([moved.endDate, moved.endTime, moved.startTime], ["2027-03-14", "04:00", flite.startTime]);
 });
 
-test("an edited Cohost description replaces Flite's HTML", () => {
+test("an edited Cohost description replaces Flite's HTML with plain text", () => {
   const cohost = fliteEventToCohost(source, event);
-  const back = cohostEventToFlite({ ...cohost, description: { text: "New copy" } });
-  assert.equal(back.description, "<p>New copy</p>");
+  const back = cohostEventToFlite({ ...cohost, description: { text: "New copy\n\nSecond &amp; last" } });
+  assert.equal(back.description, "New copy\n\nSecond & last");
+});
+
+test("a plain-text Flite description keeps its paragraphs on import and is sent back unchanged", () => {
+  const plain = { ...event, description: "First line\n\nSecond line" };
+  const cohost = fliteEventToCohost(source, plain);
+  assert.equal(cohost.description?.text, "First line\n\nSecond line");
+  assert.equal(cohostEventToFlite(cohost).description, "First line\n\nSecond line");
+});
+
+test("Cohost ticket HTML descriptions are sent to Flite as plain text", () => {
+  const cohost = fliteTicketToCohost(source, event.tickets[0]);
+  const back = cohostTicketToFlite({ ...cohost, description: "<ul>\n<li>Admits 1</li>\n<li>Open bar &amp; DJ</li>\n</ul>" });
+  assert.equal(back.description, "• Admits 1\n• Open bar & DJ");
 });
 
 // ---- tickets

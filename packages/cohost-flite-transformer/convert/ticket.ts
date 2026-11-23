@@ -1,7 +1,19 @@
 import type { FliteTicket, FliteTicketAvailability } from "@cohost/flite-types";
 import type { CohostOfferingStatus, CohostTicket } from "./cohost-types.ts";
 import { resourceContext, type SourceContext } from "../lib/context.ts";
-import { amount, APP_SOURCE, cohostCurrency, fliteMeta, idFrom, parseAmount, toMajor, toMinor } from "./support.ts";
+import {
+  amount,
+  APP_SOURCE,
+  clipText,
+  cohostCurrency,
+  FLITE_TEXT_MAX,
+  fliteMeta,
+  idFrom,
+  parseAmount,
+  toMajor,
+  toMinor,
+  toPlainText,
+} from "./support.ts";
 
 export interface FliteTicketOptions {
   /** Defaults to the ticket's own `eventId`. */
@@ -119,7 +131,7 @@ export function cohostTicketToFlite(ticket: CohostTicket): FliteTicketProperties
     ticketPrice: price,
     capacity: ticket.capacity,
     availability: keep,
-    description: ticket.description ?? "",
+    description: clipText(toPlainText(ticket.description ?? ""), FLITE_TEXT_MAX),
     maxCart: ticket.maximumQuantity,
     ...(typeof meta.ebTicketId === "string" ? { ebTicketId: meta.ebTicketId } : {}),
   };

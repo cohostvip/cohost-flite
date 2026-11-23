@@ -3,7 +3,7 @@
 import { cohostEventToFlite } from "../convert/event.ts";
 import { cohostTicketToFlite } from "../convert/ticket.ts";
 import type { CohostEvent, CohostTicket } from "../convert/cohost-types.ts";
-import { htmlToText, parseAmount, summarize } from "../convert/support.ts";
+import { parseAmount, summarize, toPlainText } from "../convert/support.ts";
 
 export type SyncMode = "publish" | "hold" | "stop" | "noop";
 export type FliteEnv = "sandbox" | "production";
@@ -60,7 +60,7 @@ export interface DesiredState {
   event: Record<string, string> | null;
   /**
    * The flyer image to upload as Flite's `hostFlyer`: the channel's own flyer, else the owner
-   * event's. https only; null when there is none. Flite accepts a flyer only on create.
+   * event's. https only; null when there is none.
    */
   flyerUrl: string | null;
   tickets: DesiredTicket[];
@@ -86,20 +86,51 @@ function decideMode(snapshot: ChannelSnapshot): SyncMode {
   return mode;
 }
 
-/** The channel's description block, else owner description, else summary, else name. */
-function describe(snapshot: ChannelSnapshot, name: string): string {
-  const blocks = snapshot.channelEvent?.contentBlocks;
-  if (Array.isArray(blocks)) {
-    for (const block of blocks) {
-      const b = rec(block);
-      if (b.designation !== "description") continue;
-      const html = rec(rec(b.data).content).html;
-      const text = typeof html === "string" ? htmlToText(html) : "";
-      if (text) return text;
-    }
+/** A multipart text (`{ html, text, md }`) as plain text: html first, then text, then md. */
+function multipartText(value: unknown): string {
+  const content = rec(value);
+  for (const key of ["html", "text", "md"]) {
+    const text = typeof content[key] === "string" ? toPlainText(content[key] as string) : "";
+    if (text) return text;
   }
+  return typeof value === "string" ? toPlainText(value) : "";
+}
+
+/** One content block as plain text: a rich-text block's content, or an FAQ's questions and answers. */
+function blockText(block: Rec): string {
+  const data = rec(block.data);
+  if (Array.isArray(data.items)) {
+    return data.items.map(rec)
+      .sort((a, b) => (num(a.order) ?? 0) - (num(b.order) ?? 0))
+      .map((item) => [toPlainText(str(item.question)), toPlainText(str(item.answer))].filter(Boolean).join("\n"))
+      .filter(Boolean)
+      .join("\n\n");
+  }
+  return data.content === undefined ? "" : multipartText(data.content);
+}
+
+/**
+ * The Flite description, as plain text: every live content block of the channel (else of the owner
+ * event) in order, the `description` block first and untitled, each other one under its title.
+ * Without block text: the owner description, else summary, else name.
+ */
+function describe(snapshot: ChannelSnapshot, name: string): string {
+  const channelBlocks = snapshot.channelEvent?.contentBlocks;
+  const blocks = Array.isArray(channelBlocks) && channelBlocks.length ? channelBlocks : snapshot.event?.contentBlocks;
+  const parts: Array<{ first: boolean; order: number; text: string }> = [];
+  for (const block of Array.isArray(blocks) ? blocks.map(rec) : []) {
+    if (block.status !== undefined && block.status !== "live") continue;
+    const text = blockText(block);
+    if (!text) continue;
+    const first = block.designation === "description";
+    const title = first ? "" : toPlainText(str(block.title) || str(rec(block.data).title));
+    parts.push({ first, order: num(block.order) ?? 0, text: title ? `${title}\n${text}` : text });
+  }
+  parts.sort((a, b) => Number(b.first) - Number(a.first) || a.order - b.order);
+  const text = parts.map((part) => part.text).join("\n\n");
+  if (text) return text;
   const owner = snapshot.event;
-  return str(rec(owner.description).text) || str(owner.summary) || name;
+  return multipartText(owner.description) || toPlainText(str(owner.summary)) || name;
 }
 
 function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
@@ -111,13 +142,14 @@ function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
   if (!str(address.region)) throw new Error("event venue has no state");
   if (!str(address.postal_code)) throw new Error("event venue has no ZIP code");
   const name = str(snapshot.channelEvent?.name) || str(owner.name);
+  const description = describe(snapshot, name);
   const cohost = {
     id: snapshot.eventId,
     companyId: snapshot.companyId,
     organizerId: null,
     name,
-    summary: summarize(describe(snapshot, name)) || name,
-    description: { text: describe(snapshot, name) },
+    summary: summarize(description) || name,
+    description: { text: description },
     tz,
     start: str(owner.start),
     end: str(owner.end),

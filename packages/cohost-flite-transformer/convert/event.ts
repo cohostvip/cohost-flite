@@ -4,14 +4,15 @@ import { resourceContext, type SourceContext } from "../lib/context.ts";
 import {
   API_VERSION,
   APP_SOURCE,
+  clipText,
   cohostCurrency,
+  FLITE_TEXT_MAX,
   fliteMeta,
-  htmlToText,
   idFrom,
   stateCode,
   stateName,
   summarize,
-  textToHtml,
+  toPlainText,
   utcToZoned,
   zonedToUtc,
 } from "./support.ts";
@@ -44,7 +45,7 @@ export function fliteEventToCohost(
   let end = zonedToUtc(event.endDate, event.endTime, event.timeZoneId);
   // Defensive: an overnight event saved with the start date as its end date.
   if (Date.parse(end) <= Date.parse(start)) end = new Date(Date.parse(end) + 86_400_000).toISOString();
-  const text = htmlToText(event.description ?? "");
+  const text = toPlainText(event.description ?? "");
   const showEvent = "showEvent" in event ? event.showEvent : undefined;
   const tickets = "tickets" in event ? event.tickets : undefined;
   const address = [event.venueLocation, event.city, [event.state && stateCode(event.state), event.zipCode].filter(Boolean).join(" ")]
@@ -144,10 +145,10 @@ export function cohostEventToFlite(event: CohostEvent): FliteEventProperties {
     ? { date: schedule.endDate, time: schedule.endTime }
     : utcToZoned(event.end, event.tz);
   const address = event.location?.address;
-  const text = event.description?.text ?? event.summary ?? "";
-  // Keep Flite's own HTML when the text has not changed since it was imported.
+  // Flite gets plain text; its own description (HTML from its editor) is kept while the text is unchanged.
+  const text = clipText(toPlainText(event.description?.text ?? event.summary ?? ""), FLITE_TEXT_MAX);
   const original = typeof flite.description === "string" ? flite.description : undefined;
-  const description = original !== undefined && htmlToText(original) === text.trim() ? original : textToHtml(text);
+  const description = original !== undefined && toPlainText(original) === text ? original : text;
   const eventId = typeof flite.originalId === "string" ? flite.originalId : idFrom(event.refId ?? event.urn, "events");
 
   return {
