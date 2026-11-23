@@ -1,6 +1,6 @@
 {
   "name": "cohost-flite-transformer-w6w",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Offline Cohost to Flite action inputs and Flite to Cohost data transformations.",
   "license": "ISC",
   "author": {
