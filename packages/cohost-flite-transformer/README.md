@@ -38,13 +38,16 @@ the anonymized live captures and the documented examples.
   `Approved` → `live`, `Pending` → `queued`, anything else → `draft`. `public` is `Approved` and
   `showEvent`.
 - **Address.** Flite state names (`New York`) become region codes (`NY`), and back. Country is `US`.
-- **Description.** Flite renders an event description as HTML but a ticket description as plain
-  text. Event descriptions are sent as cleaned HTML: attributes removed (links keep an http(s),
-  mailto or tel `href`), `span` and other unknown tags unwrapped, scripts, styles, comments and empty
-  paragraphs dropped, and no whitespace between block tags (Flite shows it with `pre-wrap`); plain
-  text becomes `<p>` paragraphs. Ticket descriptions become text: blocks are paragraphs, `<br>` a
-  line break, list items `• ` lines (`1. ` in an ordered list), and every named (HTML 4) and numeric
-  entity is decoded. Both are kept within Flite's 5000 characters. Flite's own event HTML is written
+- **Description.** Flite renders an event description as HTML but a ticket description (and any
+  name) as plain text. Event descriptions are sent as cleaned HTML: attributes removed (links keep an
+  http(s), mailto or tel `href`), `span` and other unknown tags unwrapped, scripts, styles, comments
+  and empty paragraphs dropped, and no whitespace between block tags (Flite shows it with
+  `pre-wrap`); plain text becomes `<p>` paragraphs. Entities become characters (`&rsquo;` → `’`),
+  and only `<`, `>` and an `&` that would start a reference (`&notes`) are escaped: an `&` is never
+  escaped twice (`&amp;` goes as `&`, never `&amp;amp;`). Ticket descriptions become text: blocks are
+  paragraphs, `<br>` a line break, list items `• ` lines (`1. ` in an ordered list), and every named
+  (HTML 4) and numeric entity is decoded, also text escaped twice (`&amp;amp;` → `&`). Event and
+  ticket names go as one line of text, entities decoded. Both are kept within Flite's 5000 characters. Flite's own event HTML is written
   back unchanged unless the text was edited.
 - **Channel event description** (`channel-event-to-flite`). Every live content block of the channel
   (or, with none, of the owner event) in order: the `description` block first and untitled, each
