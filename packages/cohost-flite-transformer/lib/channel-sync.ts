@@ -3,6 +3,7 @@
 import { cohostEventToFlite } from "../convert/event.ts";
 import { cohostTicketToFlite } from "../convert/ticket.ts";
 import type { CohostEvent, CohostTicket } from "../convert/cohost-types.ts";
+import { digestOf } from "./digest.ts";
 import { escapeText, FLITE_TEXT_MAX, fitHtml, parseAmount, summarize, textToHtml, toHtml, toPlainText } from "../convert/support.ts";
 
 export type SyncMode = "publish" | "hold" | "stop" | "noop";
@@ -64,6 +65,13 @@ export interface DesiredState {
    */
   flyerUrl: string | null;
   tickets: DesiredTicket[];
+  /**
+   * `v1:<sha256 hex>` of what Flite should hold: mode, labels, event fields, flyerUrl and the
+   * tickets (sorted by ticketId). `sync-event` skips a run whose digest equals the one stored on
+   * its event mapping. Excludes `errors` and `mappings`, and anything time-of-sync-like: created /
+   * changed timestamps never reach this state (`buildEvent` blanks them), keep it that way.
+   */
+  digest: string;
   mappings: ChannelSnapshot["mappings"];
   errors: Array<{ message: string; ticketId?: string }>;
 }
@@ -258,6 +266,17 @@ export function buildDesiredState(snapshot: ChannelSnapshot, _options: BuildOpti
     }
   }
 
+  const flyer = flyerUrl(snapshot);
+  const digest = digestOf({
+    mode,
+    labels,
+    event,
+    flyerUrl: flyer,
+    tickets: [...tickets]
+      .sort((a, b) => (a.ticketId < b.ticketId ? -1 : a.ticketId > b.ticketId ? 1 : 0))
+      .map((t) => ({ ticketId: t.ticketId, ticketUrn: t.ticketUrn, fields: t.fields, availability: t.availability, capacity: t.capacity })),
+  });
+
   return {
     mode,
     companyId: snapshot.companyId,
@@ -267,8 +286,9 @@ export function buildDesiredState(snapshot: ChannelSnapshot, _options: BuildOpti
     eventUrn,
     labels,
     event,
-    flyerUrl: flyerUrl(snapshot),
+    flyerUrl: flyer,
     tickets,
+    digest,
     mappings: snapshot.mappings ?? { event: [], tickets: {} },
     errors,
   };
