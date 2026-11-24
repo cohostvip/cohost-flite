@@ -65,7 +65,7 @@ test("mapped URN format", () => {
 test("event dedupe: none ⇒ create, one ⇒ use, many ⇒ smallest id + warning; listingId never selects", () => {
   assert.equal(chooseEventMapping([]).id, undefined);
   assert.equal(chooseEventMapping(undefined).id, undefined);
-  assert.deepEqual(chooseEventMapping([rec("b")]), { id: "b", storedListingId: "L1", warnings: [] });
+  assert.deepEqual(chooseEventMapping([rec("b")]), { id: "b", storedListingId: "L1", storedDigest: undefined, warnings: [] });
   const many = chooseEventMapping([rec("c"), { labels: { id: "a", eventId: "a", listingId: "L2" } }, rec("b")]);
   assert.equal(many.id, "a");
   assert.equal(many.warnings.length, 1);
@@ -426,4 +426,160 @@ test("mapped event: Flite refusing the flyer is an error, and the rest of the sy
   assert.deepEqual(paths(requests).slice(2), ["/update-event-flyer", "/update-event-properties"]);
   assert.equal(out.errors.length, 1);
   assert.match(out.errors[0], /^update-event-flyer fe1: /);
+});
+
+// ---- content digest ----
+const D1 = "v1:" + "a".repeat(64);
+const D2 = "v1:" + "b".repeat(64);
+/** A mapped desired state whose event mapping stores `stored` (on `connection`). */
+const digested = (stored: string | undefined, over: Partial<DesiredState> = {}, connection = "w6w_connection") => mapped({
+  digest: D1,
+  mappings: {
+    event: [rec("fe1", { listingId: "L2", ...(stored ? { digest: stored } : {}) }, connection)],
+    tickets: { t1: [rec("ft1", { eventId: "fe1", listingId: "L2" })] },
+  },
+  ...over,
+});
+const eventRegs = (out: { registrations: Array<{ labels: Record<string, string> }> }) => out.registrations.filter((r) => r.labels.kind === "event");
+
+test("skip: equal stored digest on this connection's mapping makes zero requests and returns unchanged", async () => {
+  for (const mode of ["publish", "hold", "stop"] as const) {
+    const { ctx, requests } = context([], true); // any fetch would throw
+    const out = await syncEvent.execute({ desired: digested(D1, { mode }) }, ctx);
+    assert.equal(requests.length, 0);
+    assert.equal(out.unchanged, true);
+    assert.deepEqual([out.operations, out.registrations, out.errors], [[], [], []]);
+    assert.equal(out.eventId, "fe1");
+  }
+  assert.ok(syncEvent.output.some((o) => o.key === "unchanged"));
+});
+
+test("no skip: digest differs, is missing, is stored on another connection, or the run has errors / noop / unusable mapping", async () => {
+  const cases: Array<[string, DesiredState]> = [
+    ["differs", digested(D2)],
+    ["not stored", digested(undefined)],
+    ["desired has none", digested(D1, { digest: undefined })],
+    ["other connection", digested(D1, {}, "other_connection")],
+    ["desired errors", digested(D1, { errors: [{ message: "ticket x: bad", ticketId: "x" }] })],
+  ];
+  for (const [name, d] of cases) {
+    const { ctx, requests } = context([remoteEvent()], true);
+    const out = await syncEvent.execute({ desired: d }, ctx);
+    assert.notEqual(out.unchanged, true, name);
+    assert.ok(requests.length > 0 || name === "other connection", name);
+  }
+  const noop = context([], true);
+  const n = await syncEvent.execute({ desired: digested(D1, { mode: "noop" }) }, noop.ctx);
+  assert.notEqual(n.unchanged, true);
+  const unusable = context([], true);
+  const u = await syncEvent.execute({ desired: digested(D1, { mappings: { event: [{ mappedUrn: "urn:1:co_1:w6w_connection:/events/zz", labels: { digest: D1 } }], tickets: {} } }) }, unusable.ctx);
+  assert.notEqual(u.unchanged, true);
+  assert.match(u.errors[0], /no usable labels\.id/);
+  assert.equal(unusable.requests.length, 0);
+});
+
+test("a digest stored on another connection's mapping does not skip: the event is created here", async () => {
+  const { ctx, requests } = context([{ success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+  const out = await syncEvent.execute({ desired: digested(D1, {}, "other_connection") }, ctx);
+  assert.equal(out.eventId, "fe9");
+  assert.equal(paths(requests)[0], "/create-event-partner");
+});
+
+test("digest saved after a successful publish; nothing saved when it already matches the stored one", async () => {
+  const { ctx } = context([remoteEvent()], true);
+  const out = await syncEvent.execute({ desired: digested(D2) }, ctx);
+  assert.deepEqual(out.errors, []);
+  assert.equal(out.registrations.length, 1);
+  assert.equal(out.registrations[0].labels.kind, "event");
+  assert.equal(out.registrations[0].labels.digest, D1);
+  // no digest in the desired state (older transformer): never saved
+  const old = context([remoteEvent()], true);
+  assert.deepEqual((await syncEvent.execute({ desired: digested(D2, { digest: undefined }) }, old.ctx)).registrations, []);
+});
+
+test("digest saved in hold and stop modes too", async () => {
+  const hold = context([remoteEvent()], true);
+  const h = await syncEvent.execute({ desired: digested(undefined, { mode: "hold" }) }, hold.ctx);
+  assert.deepEqual(h.errors, []);
+  assert.deepEqual(eventRegs(h).map((r) => r.labels.digest), [D1]);
+  const stop = context([remoteEvent({ isEventEnd: true }, [remoteTicket("ft1", { availability: "false" })])], true);
+  const s = await syncEvent.execute({ desired: digested(undefined, { mode: "stop", event: null, tickets: [] }) }, stop.ctx);
+  assert.deepEqual(s.errors, []);
+  assert.equal(s.registrations.length, 1);
+  assert.equal(s.registrations[0].labels.digest, D1);
+});
+
+test("digest not saved when the run had an error", async () => {
+  const failing = new Response(JSON.stringify({ success: false, message: "boom" }), { status: 500 });
+  const { ctx } = context([remoteEvent({ eventName: "old" }), failing], true);
+  const out = await syncEvent.execute({ desired: digested(undefined) }, ctx);
+  assert.equal(out.errors.length, 1);
+  assert.equal(out.registrations.some((r) => r.labels.digest !== undefined), false);
+  // an error surfaced by the transformer (desired.errors) also blocks it
+  const { ctx: c2 } = context([remoteEvent()], true);
+  const e = await syncEvent.execute({ desired: digested(undefined, { errors: [{ message: "x" }] }) }, c2);
+  assert.equal(e.registrations.some((r) => r.labels.digest !== undefined), false);
+  // and a stop that failed
+  const { ctx: c3 } = context([remoteEvent(), failing], true);
+  const st = await syncEvent.execute({ desired: digested(undefined, { mode: "stop" }) }, c3);
+  assert.ok(st.errors.length > 0);
+  assert.deepEqual(st.registrations, []);
+});
+
+test("digest not saved when the flyer download failed; saved when the flyer worked", async () => {
+  const bad = context([remoteEvent({ hostFlyer: [] }), new Response("nope", { status: 404 })], true);
+  const b = await syncEvent.execute({ desired: digested(undefined, { flyerUrl: FLYER }) }, bad.ctx);
+  assert.deepEqual(b.errors, []);
+  assert.equal(b.warnings.length, 1);
+  assert.equal(b.registrations.some((r) => r.labels.digest !== undefined), false);
+  const good = context([remoteEvent({ hostFlyer: [] }), jpeg(), { success: true, data: {} }], true);
+  const g = await syncEvent.execute({ desired: digested(undefined, { flyerUrl: FLYER }) }, good.ctx);
+  assert.deepEqual(eventRegs(g).map((r) => r.labels.digest), [D1]);
+});
+
+test("a relabel and a digest change coincide: exactly one event registration, carrying the digest", async () => {
+  const d = digested(D2, { listingId: "L9", labels: { ...labels, listingId: "L9" } });
+  const { ctx } = context([remoteEvent()], true);
+  const out = await syncEvent.execute({ desired: d }, ctx);
+  assert.equal(eventRegs(out).length, 1);
+  assert.equal(eventRegs(out)[0].labels.listingId, "L9");
+  assert.equal(eventRegs(out)[0].labels.digest, D1);
+  assert.equal(out.registrations.length, 2); // the event and the relabelled ticket
+  assert.equal(out.registrations.find((r) => r.labels.kind === "ticket")!.labels.digest, undefined);
+});
+
+test("relabelRegistrations: digest alone emits the event registration; a relabel without digest carries none", () => {
+  const d = digested(D2);
+  const plan = planMappings(d);
+  assert.equal(plan.storedDigest, D2);
+  const only = relabelRegistrations(d, "sandbox", "w6w_connection", plan, D1);
+  assert.equal(only.length, 1);
+  assert.equal(only[0].labels.digest, D1);
+  const relabel = desired({ mappings: { event: [rec("e1")], tickets: {} } });
+  const r = relabelRegistrations(relabel, "sandbox", "w6w_connection", planMappings(relabel));
+  assert.equal("digest" in r[0].labels, false);
+  assert.equal("digest" in registration(d, "sandbox", "w6w_connection", "e1").labels, false);
+});
+
+test("create path: digest on the event registration only when every ticket and the flyer succeeded", async () => {
+  const fresh = (over: Partial<DesiredState> = {}) => desired({ event: evFields, tickets: [tkt("t1")], digest: D1, ...over });
+  const ok = context([{ success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+  const a = await syncEvent.execute({ desired: fresh() }, ok.ctx);
+  assert.deepEqual(a.registrations.map((r) => r.labels.kind), ["event", "ticket"]);
+  assert.equal(a.registrations[0].labels.digest, D1);
+  assert.equal(a.registrations[1].labels.digest, undefined);
+  // ticket create fails
+  const tf = context([{ success: true, data: { _id: "fe9" } }, new Response(JSON.stringify({ success: false }), { status: 500 })], true);
+  const b = await syncEvent.execute({ desired: fresh() }, tf.ctx);
+  assert.equal(b.errors.length, 1);
+  assert.equal(b.registrations.length, 1);
+  assert.equal(b.registrations[0].labels.digest, undefined);
+  // flyer fails
+  const ff = context([new Response("nope", { status: 404 }), { success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+  const c = await syncEvent.execute({ desired: fresh({ flyerUrl: FLYER }) }, ff.ctx);
+  assert.equal(c.registrations[0].labels.digest, undefined);
+  // no digest in the desired state
+  const nd = context([{ success: true, data: { _id: "fe9" } }, { success: true, data: { _id: "ft9" } }], true);
+  const d = await syncEvent.execute({ desired: fresh({ digest: undefined }) }, nd.ctx);
+  assert.equal(d.registrations[0].labels.digest, undefined);
 });

@@ -10,6 +10,7 @@ import {
   registration,
   connectionSegment,
   relabelRegistrations,
+  digestToSave,
   type SyncOutput,
 } from "../lib/sync.ts";
 import { createEventFields, FLYER_TYPES, type CreateEventInput } from "./create-event.ts";
@@ -40,6 +41,7 @@ export default {
     { key: "operations", label: "Operations", type: "array" },
     { key: "errors", label: "Errors", type: "array" },
     { key: "warnings", label: "Warnings", type: "array" },
+    { key: "unchanged", label: "Skipped: desired state unchanged since the last successful sync", type: "boolean" },
   ],
   async execute(input, ctx): Promise<SyncOutput> {
     const connectionId = connectionSegment(ctx);
@@ -58,8 +60,20 @@ export default {
     const plan = planMappings(desired);
     out.warnings.push(...plan.warnings);
     out.eventId = plan.fliteEventId ?? "";
-    const client = new FliteClient(ctx);
     const mode = desired.mode;
+    // Unchanged since the last fully successful sync (digest stored on this connection's event mapping): no client, no requests.
+    if (
+      desired.digest &&
+      mode !== "noop" &&
+      desired.errors.length === 0 &&
+      !plan.unusableEventMapping &&
+      plan.fliteEventId !== undefined &&
+      plan.storedDigest === desired.digest
+    ) {
+      out.unchanged = true;
+      return out;
+    }
+    const client = new FliteClient(ctx);
     if (mode === "noop") return out;
     if (plan.unusableEventMapping) {
       out.errors.push("event mapping present but has no usable labels.id; refusing to create or write");
@@ -67,6 +81,9 @@ export default {
     }
     // Event-level conversion failure: errors only, zero requests.
     if (mode === "publish" && !desired.event) return out;
+
+    // Set when a flyer download fails: the digest is then not saved, so the next run retries it.
+    const flyerState = { failed: false };
 
     // After the first successful create, nothing may throw: failures are reported in `errors`.
     const attempt = async (op: string, target: string, detail: Record<string, unknown>, run: () => Promise<unknown>) => {
@@ -82,7 +99,7 @@ export default {
 
     if (plan.fliteEventId === undefined) {
       if (mode !== "publish" || !desired.event) return out;
-      return await createPath(client, desired, env, connectionId, out, attempt);
+      return await createPath(client, desired, env, connectionId, out, attempt, flyerState);
     }
 
     const eventId = plan.fliteEventId;
@@ -95,6 +112,8 @@ export default {
             client.updateTicket(ticketProperties({ eventId, ticketId: t._id, availability: "false" })));
         }
       }
+      const stopDigest = out.errors.length === 0 ? digestToSave(desired, plan.storedDigest) : undefined;
+      if (stopDigest !== undefined) out.registrations.push(registration(desired, env, connectionId, eventId, undefined, stopDigest));
       return out;
     }
 
@@ -105,7 +124,7 @@ export default {
       }
       // Fill a missing flyer only: Flite re-hosts uploads, so a changed Cohost flyer cannot be detected.
       if (desired.flyerUrl && !(remote.hostFlyer ?? []).length) {
-        const flyer = await downloadFlyer(client, desired.flyerUrl, out);
+        const flyer = await downloadFlyer(client, desired.flyerUrl, out, flyerState);
         if (flyer) await attempt("update-event-flyer", eventId, {}, () => client.updateEventFlyer(eventId, flyer));
       }
       const changed = diffEvent(desired.event, remote);
@@ -145,7 +164,8 @@ export default {
           client.updateTicket(ticketProperties({ eventId, ticketId: have._id, availability: "false" })));
       }
     }
-    out.registrations.push(...relabelRegistrations(desired, env, connectionId, plan));
+    const saved = out.errors.length === 0 && !flyerState.failed ? digestToSave(desired, plan.storedDigest) : undefined;
+    out.registrations.push(...relabelRegistrations(desired, env, connectionId, plan, saved));
     return out;
   },
 } satisfies ActionDefinition<SyncEventInput>;
@@ -217,16 +237,20 @@ async function createPath(
   connectionId: string,
   out: SyncOutput,
   attempt: Attempt,
+  flyerState: { failed: boolean },
 ): Promise<SyncOutput> {
   // Validation and the create itself may throw: nothing exists yet. A flyer problem never blocks the create.
   const fields = createEventFields(desired.event as unknown as CreateEventInput);
-  const flyer = desired.flyerUrl ? await downloadFlyer(client, desired.flyerUrl, out) : undefined;
+  const flyer = desired.flyerUrl ? await downloadFlyer(client, desired.flyerUrl, out, flyerState) : undefined;
   const created = await client.createEvent(fields, flyer);
   const eventId = created._id;
   out.eventId = eventId;
   out.operations.push({ op: "create-event", target: eventId });
-  out.registrations.push(registration(desired, env, connectionId, eventId));
+  // Registered first (the event, then its tickets); the digest is added below only if everything succeeded.
+  const eventRegistration = out.registrations.push(registration(desired, env, connectionId, eventId)) - 1;
   for (const want of desired.tickets) await createTicket(client, desired, env, connectionId, eventId, want, out, attempt);
+  const saved = out.errors.length === 0 && !flyerState.failed ? digestToSave(desired, undefined) : undefined;
+  if (saved !== undefined) out.registrations[eventRegistration] = registration(desired, env, connectionId, eventId, undefined, saved);
   return out;
 }
 
@@ -241,6 +265,7 @@ async function downloadFlyer(
   client: FliteClient,
   url: string,
   out: SyncOutput,
+  state?: { failed: boolean },
 ): Promise<Omit<MultipartFile, "name"> | undefined> {
   try {
     const response = await client.ctx.fetch(url, { headers: { accept: "image/*" } });
@@ -252,6 +277,7 @@ async function downloadFlyer(
     const ext = contentType.split("/")[1].replace("jpeg", "jpg");
     return { filename: `flyer.${ext}`, contentType, bytes };
   } catch (error) {
+    if (state) state.failed = true;
     out.warnings.push(`flyer not uploaded: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   }

@@ -35,6 +35,8 @@ export interface DesiredState {
   /** The flyer to upload on create (Flite takes `hostFlyer` only on create). Absent from older transformers. */
   flyerUrl?: string | null;
   tickets: DesiredTicket[];
+  /** `v1:<sha256 hex>` content digest of the desired state. Absent from older transformers (no skip, nothing saved). */
+  digest?: string;
   mappings: { event: MappingRecord[]; tickets: Record<string, MappingRecord[]> };
   errors: Array<{ message: string; ticketId?: string }>;
 }
@@ -59,6 +61,8 @@ export interface SyncOutput {
   operations: SyncOperation[];
   errors: string[];
   warnings: string[];
+  /** True when the run was skipped because the desired state's digest equals the one stored on the event mapping. */
+  unchanged?: boolean;
 }
 
 export type FliteEnv = "sandbox" | "production";
@@ -109,6 +113,8 @@ export interface MappingChoice {
   id: string | undefined;
   /** The stored `listingId` label of the chosen record. */
   storedListingId: string | undefined;
+  /** The stored `digest` label of the chosen record (the last successfully synced desired state). */
+  storedDigest: string | undefined;
   warnings: string[];
 }
 
@@ -116,12 +122,13 @@ function choose(records: MappingRecord[], what: string, accept: (r: MappingRecor
   const usable = records
     .filter((r) => typeof r?.labels?.id === "string" && r.labels.id !== "" && accept(r))
     .sort((a, b) => (a.labels!.id < b.labels!.id ? -1 : a.labels!.id > b.labels!.id ? 1 : 0));
-  if (!usable.length) return { id: undefined, storedListingId: undefined, warnings: [] };
+  if (!usable.length) return { id: undefined, storedListingId: undefined, storedDigest: undefined, warnings: [] };
   const ids = [...new Set(usable.map((r) => r.labels!.id))];
   const chosen = usable[0];
   return {
     id: chosen.labels!.id,
     storedListingId: chosen.labels!.listingId,
+    storedDigest: chosen.labels!.digest,
     warnings: ids.length > 1
       ? [`${ids.length} ${what} mappings found (${ids.join(", ")}); using the smallest id ${chosen.labels!.id}`]
       : [],
@@ -150,6 +157,8 @@ export interface MappingPlan {
   /** The chosen Flite event id; undefined ⇒ one create (publish only). */
   fliteEventId: string | undefined;
   storedListingId: string | undefined;
+  /** The chosen (connection-scoped) event mapping's stored digest label. */
+  storedDigest: string | undefined;
   tickets: TicketPlan[];
   warnings: string[];
   /** Event mapping records exist but none carries a usable `labels.id`: fail closed, never create. */
@@ -174,7 +183,7 @@ export function planMappings(desired: DesiredState): MappingPlan {
     };
   });
   const unusableEventMapping = event.id === undefined && (desired.mappings?.event?.length ?? 0) > 0;
-  return { fliteEventId: event.id, storedListingId: event.storedListingId, tickets, warnings, unusableEventMapping };
+  return { fliteEventId: event.id, storedListingId: event.storedListingId, storedDigest: event.storedDigest, tickets, warnings, unusableEventMapping };
 }
 
 /** A registration with every label field set. */
@@ -184,6 +193,7 @@ export function registration(
   connectionId: string,
   fliteEventId: string,
   ticket?: { ticketUrn: string; fliteTicketId: string },
+  digest?: string,
 ): Registration {
   const l = desired.labels;
   return {
@@ -197,16 +207,32 @@ export function registration(
       kind: ticket ? "ticket" : "event",
       id: ticket ? ticket.fliteTicketId : fliteEventId,
       eventId: fliteEventId,
+      ...(digest !== undefined && !ticket ? { digest } : {}),
     },
   };
 }
 
-/** Existing mapped resources whose stored `listingId` differs from the desired one (a relabel; never a create). */
-export function relabelRegistrations(desired: DesiredState, env: string, connectionId: string, plan: MappingPlan): Registration[] {
+/** The digest to store after a fully successful sync: only when set and different from the stored one. */
+export function digestToSave(desired: DesiredState, storedDigest: string | undefined): string | undefined {
+  return desired.digest && desired.digest !== storedDigest ? desired.digest : undefined;
+}
+
+/**
+ * Existing mapped resources whose stored `listingId` differs from the desired one (a relabel; never a
+ * create). `digest`, when given, is stored on the event registration: the one relabel registration,
+ * or one of its own when the listing is unchanged. There is never a second event registration.
+ */
+export function relabelRegistrations(
+  desired: DesiredState,
+  env: string,
+  connectionId: string,
+  plan: MappingPlan,
+  digest?: string,
+): Registration[] {
   if (plan.fliteEventId === undefined) return [];
   const out: Registration[] = [];
-  if (plan.storedListingId !== desired.labels.listingId) {
-    out.push(registration(desired, env, connectionId, plan.fliteEventId));
+  if (plan.storedListingId !== desired.labels.listingId || digest !== undefined) {
+    out.push(registration(desired, env, connectionId, plan.fliteEventId, undefined, digest));
   }
   for (const t of plan.tickets) {
     if (t.fliteTicketId !== undefined && t.storedListingId !== desired.labels.listingId) {
