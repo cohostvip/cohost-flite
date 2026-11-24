@@ -16,6 +16,8 @@ It takes a `channelId` param, so tickets of unrelated events never start a run. 
 4. `register-urn-mappings` (retry 3) — persists `sync-event`'s `registrations`.
 5. `report` (`@w6w/script`) — fails the run iff `sync-event` returned `errors`. It runs after step 4, so mappings are saved even when the run fails.
 
+The trigger node sets `aggregateBy: "event"` and `aggregateSeconds: 60`: a burst of changes to one event (a bulk rewrite of its tickets) collapses into one run per 60 seconds, instead of one racing run per change. `aggregateBy` is `none` or `event`; `aggregateSeconds` is 1 to 3600. Both are params of the cohost-w6w `channel-changed` trigger.
+
 Workflow file: `workflows/flite-sales-channel.workflow.json`. It holds no ids, tokens or credentials; connections are refs bound at install.
 
 ## Orders
@@ -73,10 +75,20 @@ Mode comes from the owner `event.status` and the snapshot:
 
 - `publish`: create (if unmapped) or update. Reads `/get-event-tickets-info` first. Sends `/update-event-properties` only for fields that differ. Reopens a remote ended event (`/update-event-end-toggle` ended=false). Uploads the flyer when Flite has none (`/update-event-flyer`, see Flyer). Remote tickets with no desired match get availability "false".
 - `hold`: ticket capacity/availability updates only. No event update, end toggle or create.
-- `stop`: end toggle ended=true unless already ended, and availability "false" on each remote ticket not already "false". No creates, no registrations, no `/delete-*` calls.
+- `stop`: end toggle ended=true unless already ended, and availability "false" on each remote ticket not already "false". No creates, no `/delete-*` calls, and no registrations except the event's `digest` label after a fully successful run.
 - An event-level conversion failure (no venue state/ZIP, no timezone) gives `event:null` plus an `errors` entry, and `sync-event` makes zero requests. Per-ticket problems (non-USD, donation) exclude that ticket and add an `errors` entry.
 - The Flite environment is the connection's: a `-staging` auth key targets the sandbox API, anything else production. There is no env variable or `expectedEnv` field.
 - `sync-event` does not throw after its first successful create: later failures go to `errors`.
+
+## Sync digest
+
+The desired state carries `digest`: `v1:` plus the SHA-256 hex of a canonical JSON (keys sorted at every depth) of `mode`, `labels` (`provider`, `channelId`, `listingId`), `event` (the Flite fields), `flyerUrl` and the `tickets` sorted by `ticketId` (`ticketId`, `ticketUrn`, `fields`, `availability`, `capacity`). It leaves out `errors`, `mappings` and anything time-of-sync-like: created/changed timestamps never reach the desired state. Hashing is a small pure-TS SHA-256 (`lib/sha256.ts`), because the bundled apps cannot rely on `node:crypto`.
+
+`sync-event` stores the digest as the `digest` label of the event mapping, and uses it to skip runs whose desired state Flite already holds.
+
+- **Skip.** All of: `desired.digest` is set; mode is not `noop`; `desired.errors` is empty; the event mapping is usable; a Flite event id was chosen; and the chosen connection-scoped event mapping's `labels.digest` equals `desired.digest`. The action then returns `unchanged: true` with no operations, no registrations and no Flite request at all (no GET either). A digest stored on another Flite connection's mapping never counts.
+- **Save.** After a fully successful run (`errors` empty and no flyer download failed), when the stored digest differs from `desired.digest`, the event registration carries `labels.digest`. In publish, hold and stop mode alike. There is never more than one event registration: a listing relabel and a digest change share it. On the create path the digest goes on the new event's registration only if every ticket create succeeded and the flyer did not fail. Ticket registrations carry no digest.
+- A failed or partial run leaves the stored digest alone, so the next run re-checks Flite and retries. An older transformer sends no `digest`: nothing is skipped or saved.
 
 ## Flyer
 

@@ -49,6 +49,10 @@ the anonymized live captures and the documented examples.
   (HTML 4) and numeric entity is decoded, also text escaped twice (`&amp;amp;` → `&`). Event and
   ticket names go as one line of text, entities decoded. Both are kept within Flite's 5000 characters. Flite's own event HTML is written
   back unchanged unless the text was edited.
+- **Sync digest** (`channel-event-to-flite`). The desired state has `digest`: `v1:` + SHA-256 hex of a
+  canonical (sorted-key) JSON of `mode`, `labels`, `event`, `flyerUrl` and the tickets sorted by id.
+  It excludes `errors`, `mappings` and timestamps, so it changes only when what Flite should hold
+  changes. `sync-event` uses it to skip unchanged runs. The SHA-256 is pure TypeScript (`lib/sha256.ts`).
 - **Channel event description** (`channel-event-to-flite`). Every live content block of the channel
   (or, with none, of the owner event) in order: the `description` block first and untitled, each
   other one under an `<h3>` title; an FAQ block as its questions and answers. A block that would pass

@@ -85,6 +85,13 @@ without file access it then fails with a clear error and sends nothing. After cr
 set only through the undocumented `POST /update-event-flyer` (`/update-event-properties` ignores
 `hostFlyer`); `sync-event` uses it to fill a missing flyer (see `docs/flite-sales-channel.md`).
 
+**Sync digest.** `sync-event` outputs `eventId`, `env`, `mode`, `registrations`, `operations`, `errors`,
+`warnings` and `unchanged`. The desired state may carry a `digest` (sent by transformer 2.4.0 and
+later). When it equals the `digest` label stored on this connection's event mapping, the run is
+skipped before any Flite request: `unchanged: true`, no operations, no registrations. After a fully
+successful run (no errors, no flyer failure) the event registration carries the new `digest` label.
+Details in `docs/flite-sales-channel.md` (Sync digest).
+
 Authentication endpoints (`partner-login`, `partner-refresh-token`, `partner-revoke-token`,
 `switch-organization-token`) are the connection's auth hooks, not actions.
 
