@@ -181,6 +181,9 @@ test("workflow has the one channel-scoped root plus the Flite order root, and no
   const t = all.filter((n: any) => n.id !== "order_placed");
   for (const n of t) assert.deepEqual(n.with.channelId, { $: "vars.channelId" });
   assert.deepEqual(node(wf, "channel_changed").with.actions, ["event.change", "ticket.change"]);
+  // bursts of changes to one event (a bulk rewrite) collapse into one run
+  assert.equal(node(wf, "channel_changed").with.aggregateBy, "event");
+  assert.equal(node(wf, "channel_changed").with.aggregateSeconds, 60);
   assert.deepEqual(wf.edges.filter((e: any) => e.from === "channel_changed"), [{ from: "channel_changed", to: "snapshot" }]);
   assert.ok(!wf.nodes.some((n: any) => n.id === "channel_ticket_changed"));
   assert.ok(!/channel[-_](event|ticket)[-_]changed/.test(readFileSync(FILE, "utf8")));

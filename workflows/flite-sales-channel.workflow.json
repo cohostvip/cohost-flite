@@ -15,7 +15,7 @@
     {
       "id": "channel_changed",
       "uses": {"app": "vip.cohost.w6w", "action": "channel-changed", "trigger": true, "connectionRef": "cohost"},
-      "with": {"channelId": {"$": "vars.channelId"}, "actions": ["event.change", "ticket.change"]},
+      "with": {"channelId": {"$": "vars.channelId"}, "actions": ["event.change", "ticket.change"], "aggregateBy": "event", "aggregateSeconds": 60},
       "notes": "Fires when an event or ticket listed on this sales channel (vars.channelId) changes.",
       "position": {"x": 0, "y": 320}
     },
