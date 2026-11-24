@@ -13,7 +13,7 @@ import type {
 import { cohostEventToFlite, fliteEventToCohost } from "../convert/event.ts";
 import { cohostTicketToFlite, fliteTicketToCohost } from "../convert/ticket.ts";
 import { cohostOrderToFlite, fliteOrderToCohost } from "../convert/order.ts";
-import { clipText, htmlToText, stateCode, stateName, toPlainText, utcToZoned, zonedToUtc } from "../convert/support.ts";
+import { clipText, escapeText, fitHtml, htmlToText, stateCode, stateName, toHtml, toPlainText, utcToZoned, zonedToUtc } from "../convert/support.ts";
 import fliteToCohostAction from "../actions/flite-to-cohost.ts";
 import cohostToFliteDataAction from "../actions/cohost-to-flite-data.ts";
 import { event, order, source } from "../../../tests/fixtures.ts";
@@ -82,6 +82,35 @@ test("lists become bullet or numbered lines, also when items wrap their text in 
 
 test("entities: escaped markup stays text, unknown names stay as written, scripts and comments vanish", () => {
   assert.equal(htmlToText("<p>Bring &lt;ID&gt; &amp; a friend &bogus; &#0;</p><!-- note --><script>x()</script>"), "Bring <ID> & a friend &bogus; &#0;");
+});
+
+test("event HTML escapes only what a browser would misread: never a plain &, never an entity a second time", () => {
+  assert.equal(escapeText("R&B, Q&A, AT&T & more"), "R&B, Q&A, AT&T & more");
+  assert.equal(escapeText("<21+> fish&notes &#5 &copy2026"), "&lt;21+&gt; fish&amp;notes &amp;#5 &amp;copy2026");
+  assert.equal(escapeText("&mdash; &check; &#8217;"), "&mdash; &check; &#8217;");
+  assert.equal(toHtml("Rock & roll\nYes &check;"), "<p>Rock & roll<br>Yes &check;</p>");
+});
+
+test("event HTML entities become characters (Flite also shows the description as text); <, > and a reference-like & stay escaped", () => {
+  assert.equal(toHtml("<p>New Year&rsquo;s &mdash; Doors &amp; music &lt;21+&gt; &#8217; &check; &amp;notes</p>"),
+    "<p>New Year’s — Doors & music &lt;21+&gt; ’ &check; &amp;notes</p>");
+  // Text escaped twice (transformer 2.1.0 sent `&amp;mdash;`) is not escaped again.
+  assert.equal(toHtml("<p>Eve &amp;mdash; late</p>"), "<p>Eve — late</p>");
+  assert.equal(toHtml('<p><a href="https://x.com/?a=1&amp;b=2&amp;copy=3">t</a></p>'), '<p><a href="https://x.com/?a=1&b=2&amp;copy=3">t</a></p>');
+});
+
+test("`&amp;` never becomes `&amp;amp;`: entities are decoded once, then only a reference-like & is escaped", () => {
+  for (const input of ["Tom &amp; Jerry", "<p>Tom &amp; Jerry</p>", "Tom & Jerry", "<p>Tom & Jerry</p>"]) {
+    assert.equal(toHtml(input), "<p>Tom & Jerry</p>", input);
+    assert.equal(toHtml(toHtml(input)), "<p>Tom & Jerry</p>", `${input}, sent through twice`);
+  }
+  for (const input of ["&amp;", "&amp;amp;", "<p>&amp;amp;</p>", "<p>&amp;notes &amp;#38; &amp;mdash;</p>", '<p><a href="https://x.com/?a=1&amp;amp;b=2">t</a></p>']) {
+    assert.doesNotMatch(toHtml(input), /&amp;amp;/, input);
+  }
+  assert.equal(escapeText("&amp; &amp;amp;"), "&amp; &amp;amp;");
+  assert.equal(toHtml("<p>&amp;amp; &amp;amp;notes</p>"), "<p>& &amp;notes</p>");
+  assert.equal(toPlainText("Tom &amp; Jerry"), "Tom & Jerry");
+  assert.equal(fitHtml([`<p>Tom &amp; Jerry ${"word ".repeat(30)}</p>`], 60).slice(0, 20), "<p>Tom & Jerry word ");
 });
 
 test("toPlainText: plain text keeps its line breaks; only HTML is parsed", () => {
@@ -175,7 +204,7 @@ test("a Cohost-authored event converts to Flite create properties", () => {
   });
   assert.deepEqual(props, {
     eventName: "Rooftop Night",
-    description: "<p>Rooftop party.</p><p>Bring &lt;ID&gt; &amp; a friend.</p>",
+    description: "<p>Rooftop party.</p><p>Bring &lt;ID&gt; & a friend.</p>",
     venueName: "The Roof",
     venueLocation: "9 Sky Rd",
     city: "Los Angeles",
@@ -202,9 +231,9 @@ test("a captured event ending in the DST gap keeps its Flite times until resched
 test("an edited Cohost description replaces Flite's HTML", () => {
   const cohost = fliteEventToCohost(source, event);
   const back = cohostEventToFlite({ ...cohost, description: { text: "New copy\nline two\n\nSecond &amp; last" } });
-  assert.equal(back.description, "<p>New copy<br>line two</p><p>Second &amp; last</p>");
+  assert.equal(back.description, "<p>New copy<br>line two</p><p>Second & last</p>");
   const html = cohostEventToFlite({ ...cohost, description: { html: '<p dir="auto">Rich &rsquo;copy&rsquo;</p>\n<p>&nbsp;</p>', text: "ignored" } });
-  assert.equal(html.description, "<p>Rich &rsquo;copy&rsquo;</p>");
+  assert.equal(html.description, "<p>Rich ’copy’</p>");
 });
 
 test("a plain-text Flite description keeps its paragraphs on import and is sent back unchanged", () => {
@@ -218,6 +247,26 @@ test("Cohost ticket HTML descriptions are sent to Flite as plain text", () => {
   const cohost = fliteTicketToCohost(source, event.tickets[0]);
   const back = cohostTicketToFlite({ ...cohost, description: "<ul>\n<li>Admits 1</li>\n<li>Open bar &amp; DJ</li>\n</ul>" });
   assert.equal(back.description, "• Admits 1\n• Open bar & DJ");
+});
+
+test("ticket descriptions carry no tags, also ones outside the usual rich-text set", () => {
+  const cohost = fliteTicketToCohost(source, event.tickets[0]);
+  assert.equal(cohostTicketToFlite({ ...cohost, description: "Doors <center>9pm</center> late" }).description, "Doors\n\n9pm\n\nlate");
+});
+
+test("ticket name and description: `&amp;` is sent as `&`, never `&amp;` or `&amp;amp;`", () => {
+  const ticket = fliteTicketToCohost(source, event.tickets[0]);
+  for (const input of ["Tom &amp; Jerry", "Tom &amp;amp; Jerry", "Tom &#38; Jerry", "<p>Tom &amp; Jerry</p>", "<b>Tom</b> & Jerry", "Tom & Jerry"]) {
+    const sent = cohostTicketToFlite({ ...ticket, name: input, description: input });
+    assert.deepEqual([sent.ticketName, sent.description], ["Tom & Jerry", "Tom & Jerry"], input);
+  }
+});
+
+test("event and ticket names are sent as text, entities decoded", () => {
+  const cohost = fliteEventToCohost(source, event);
+  assert.equal(cohostEventToFlite({ ...cohost, name: "Rock &amp; Roll &ndash; NYE" }).eventName, "Rock & Roll – NYE");
+  const ticket = fliteTicketToCohost(source, event.tickets[0]);
+  assert.equal(cohostTicketToFlite({ ...ticket, name: "GA &ndash; Early &amp; Late" }).ticketName, "GA – Early & Late");
 });
 
 // ---- tickets

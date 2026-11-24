@@ -91,8 +91,9 @@ export function utcToZoned(iso: string, tz: string): { date: string; time: strin
   return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}` };
 }
 
-// ---- Text. Flite renders an event description as HTML, but a ticket description as plain text
-// (HTML appears as literal tags): events get cleaned HTML, tickets plain text.
+// ---- Text. Flite renders an event description as HTML, but a ticket description (and every name)
+// as plain text (HTML appears as literal tags): events get cleaned HTML, tickets and names text. Flite
+// stores what it is sent, so an `&` already escaped must never be escaped again (`&amp;mdash;`).
 
 /** HTML 4 named entities (the set rich-text editors such as TinyMCE write): name → hex code point. */
 const NAMED_ENTITIES: Record<string, string> = Object.fromEntries(
@@ -131,8 +132,31 @@ const NAMED_ENTITIES: Record<string, string> = Object.fromEntries(
 );
 NAMED_ENTITIES.apos = "'";
 
-/** Decodes named (exact case, then lower case) and numeric entities; an unknown one stays as written. */
+/**
+ * The names a browser reads even without a closing `;` (`&notes` shows as `¬es`): the HTML 4 Latin-1
+ * names, `amp` `lt` `gt` `quot`, and the upper-case `AMP` `COPY` `GT` `LT` `QUOT` `REG`.
+ */
+const BARE_REFERENCE = new RegExp(`^(?:#|${[
+  ...Object.keys(NAMED_ENTITIES).filter((name) => {
+    const point = NAMED_ENTITIES[name].codePointAt(0)!;
+    return (point >= 0xa0 && point <= 0xff) || ["amp", "lt", "gt", "quot"].includes(name);
+  }),
+  "AMP", "COPY", "GT", "LT", "QUOT", "REG",
+].join("|")})`);
+
+/**
+ * Decodes named (exact case, then lower case) and numeric entities, again until none is left, so text
+ * escaped twice comes out as text (`&amp;amp;` → `&`, never `&amp;`); an unknown one stays as written.
+ */
 export function decodeEntities(text: string): string {
+  for (let previous = ""; previous !== text; ) {
+    previous = text;
+    text = decodeOnce(text);
+  }
+  return text;
+}
+
+function decodeOnce(text: string): string {
   return text.replace(/&(#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});/gi, (entity, code: string) => {
     if (code[0] === "#") {
       const point = code[1] === "x" || code[1] === "X" ? parseInt(code.slice(2), 16) : Number(code.slice(1));
@@ -156,7 +180,7 @@ function tidy(text: string): string {
 const BLOCK_TAGS = new Set([
     "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "section", "article", "header", "footer",
     "aside", "nav", "main", "table", "thead", "tbody", "tfoot", "tr", "pre", "hr", "address", "figure",
-    "figcaption", "dl", "dt", "dd",
+    "figcaption", "dl", "dt", "dd", "center", "caption",
 ]);
 
 /**
@@ -200,7 +224,8 @@ export function htmlToText(html: string): string {
 /** A real HTML tag (not text like `<ID>` or `<3`): only these mark a value as HTML. */
 const HAS_TAG = new RegExp(
   "<\\/?(?:p|br|div|span|ul|ol|li|h[1-6]|strong|b|em|i|u|s|a|blockquote|table|thead|tbody|tr|td|th|img|hr|" +
-    "section|article|pre|code|sub|sup|del|ins|mark|small|font|figure|figcaption|dl|dt|dd)\\b[^>]*>",
+    "section|article|pre|code|sub|sup|del|ins|mark|small|font|figure|figcaption|dl|dt|dd|center|strike|big|tt|" +
+    "header|footer|nav|main|aside|address|caption|tfoot|abbr|cite|q|wbr)\\b[^>]*>",
   "i",
 );
 
@@ -210,13 +235,20 @@ export function toPlainText(value: string): string {
   return tidy(decodeEntities(value.replace(/\r\n?/g, "\n")));
 }
 
-export const escapeHtml = (text: string) =>
-  text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+/**
+ * Text as event-description HTML, escaping only what a browser would misread: `<`, `>`, and an `&`
+ * that would start a reference (`&notes`, `&#5`). Any other `&` is sent as is, and an entity in the
+ * text (`&mdash;`, `&check;`) stays as written: it is never escaped a second time.
+ */
+export function escapeText(text: string): string {
+  return text.replace(/[<>]|&(?!(?:#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});)/gi, (char: string, offset: number) =>
+    char === "<" ? "&lt;" : char === ">" ? "&gt;" : BARE_REFERENCE.test(text.slice(offset + 1)) ? "&amp;" : "&");
+}
 
 /** Plain text → HTML: blank lines separate paragraphs, a single line break becomes `<br>`. */
 export function textToHtml(text: string): string {
   return text.trim().split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean)
-    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br>")}</p>`).join("");
+    .map((paragraph) => `<p>${escapeText(paragraph).replace(/\n/g, "<br>")}</p>`).join("");
 }
 
 /** Tags kept (without attributes) in an event description; any other tag is unwrapped. */
@@ -232,7 +264,9 @@ const EMPTY_ELEMENT = /<(p|h[1-6]|li|ul|ol|blockquote|div|section|article|strong
  * Rich-text editor HTML → the HTML sent to Flite: attributes are removed (a link keeps an http(s),
  * mailto or tel `href`), other tags such as `span` are unwrapped, scripts, styles and comments
  * dropped, empty paragraphs removed, and whitespace between block tags removed (Flite shows the
- * description with `white-space: pre-wrap`, so source line breaks would show). Entities stay as written.
+ * description with `white-space: pre-wrap`, so source line breaks would show). Entities become
+ * characters (Flite also shows the description as text, where `&rsquo;` reads literally), escaped
+ * again only as `escapeText` does.
  */
 export function cleanHtml(html: string): string {
   const links: string[] = [];
@@ -252,7 +286,8 @@ export function cleanHtml(html: string): string {
       if (name === "br" || name === "hr") return close ? "" : `<${name}>`;
       return `<${close}${name}>`;
     })
-    .replace(/\u0001(\d+)\u0002/g, (_, i: string) => `<a href="${escapeHtml(links[Number(i)])}">`)
+    .replace(/[^<>]+/g, (text) => escapeText(decodeEntities(text)))
+    .replace(/\u0001(\d+)\u0002/g, (_, i: string) => `<a href="${escapeText(links[Number(i)]).replace(/"/g, "&quot;")}">`)
     .replace(/\u0001\/\u0002/g, "</a>")
     .replace(/[ \t\r\n\f]+/g, " ")
     .replace(BLOCK_EDGE, "$1");
@@ -262,6 +297,9 @@ export function cleanHtml(html: string): string {
   }
   return out.replace(/^(?:<br>)+|(?:<br>)+$/g, "").trim();
 }
+
+/** A name (event or ticket) as Flite shows it, plain text on one line: tags dropped, entities decoded. */
+export const toName = (value: string) => toPlainText(value).replace(/\s+/g, " ");
 
 /** Any Cohost or Flite text field → event-description HTML: HTML is cleaned, plain text becomes paragraphs. */
 export function toHtml(value: string): string {

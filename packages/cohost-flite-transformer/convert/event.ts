@@ -13,6 +13,7 @@ import {
   stateName,
   summarize,
   toHtml,
+  toName,
   toPlainText,
   utcToZoned,
   zonedToUtc,
@@ -155,7 +156,7 @@ export function cohostEventToFlite(event: CohostEvent): FliteEventProperties {
 
   return {
     ...(eventId ? { eventId } : {}),
-    eventName: event.name,
+    eventName: typeof event.name === "string" ? toName(event.name) : event.name,
     description,
     venueName: event.location?.name ?? "",
     venueLocation: address?.address_1 ?? "",

@@ -12,6 +12,7 @@ import {
   parseAmount,
   toMajor,
   toMinor,
+  toName,
   toPlainText,
 } from "./support.ts";
 
@@ -127,7 +128,7 @@ export function cohostTicketToFlite(ticket: CohostTicket): FliteTicketProperties
   return {
     ...(eventId ? { eventId } : {}),
     ...(ticketId ? { ticketId } : {}),
-    ticketName: ticket.name,
+    ticketName: typeof ticket.name === "string" ? toName(ticket.name) : ticket.name,
     ticketPrice: price,
     capacity: ticket.capacity,
     availability: keep,

@@ -71,7 +71,7 @@ test("publish event: name, description fallbacks, dates, venue", () => {
   const block = { channelEvent: { name: "N", contentBlocks: [{ designation: "description", data: { content: { html: "<p>Blk</p>" } } }] } };
   assert.equal(buildDesiredState(snap(block), opts).event!.description, "<p>Blk</p>");
   const o = snap().event;
-  assert.equal(buildDesiredState(snap({ event: { ...o, description: { html: "<p>Owner &amp; html</p>" } } }), opts).event!.description, "<p>Owner &amp; html</p>");
+  assert.equal(buildDesiredState(snap({ event: { ...o, description: { html: "<p>Owner &amp; html</p>" } } }), opts).event!.description, "<p>Owner & html</p>");
   assert.equal(buildDesiredState(snap({ event: { ...o, description: {} } }), opts).event!.description, "<p>Owner summary</p>");
   assert.equal(buildDesiredState(snap({ event: { ...o, description: {}, summary: "" } }), opts).event!.description, "<p>Channel Name</p>");
 });
@@ -91,13 +91,45 @@ const blocks = [
 test("publish event: the description is HTML from every live content block, the description block first", () => {
   const d = buildDesiredState(snap({ channelEvent: { name: "N", contentBlocks: blocks } }), opts);
   assert.equal(d.event!.description,
-    "<h3>Two Spaces.</h3><p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p>" +
+    "<h3>Two Spaces.</h3><p>New Year’s Eve — <strong>74Wythe</strong>.</p>" +
     "<h3>Performers</h3><p>Music: House | Top 40</p>" +
     "<h3>Menu</h3><p>Food will not be served</p>" +
-    "<h3>FAQ</h3><p><strong>Coat check?</strong></p><p>Yes &amp; free</p><p><strong>Age?</strong></p><p>21+</p>");
+    "<h3>FAQ</h3><p><strong>Coat check?</strong></p><p>Yes & free</p><p><strong>Age?</strong></p><p>21+</p>");
   // No channel blocks: the owner event's blocks.
   const owner = buildDesiredState(snap({ event: { ...snap().event, contentBlocks: blocks.slice(4) } }), opts);
-  assert.equal(owner.event!.description, "<h3>Two Spaces.</h3><p>New Year&rsquo;s Eve &mdash; <strong>74Wythe</strong>.</p><h3>Performers</h3><p>Music: House | Top 40</p>");
+  assert.equal(owner.event!.description, "<h3>Two Spaces.</h3><p>New Year’s Eve — <strong>74Wythe</strong>.</p><h3>Performers</h3><p>Music: House | Top 40</p>");
+});
+
+test("publish event: no path escapes a plain & or escapes an entity a second time", () => {
+  const o = snap().event;
+  const desc = (over: Record<string, unknown>) => buildDesiredState(snap(over), opts).event!;
+  assert.equal(desc({ channelEvent: { name: "N", contentBlocks: [
+    { designation: "description", status: "live", data: { content: { text: "Rock & roll &check;" } } },
+    { title: "Food & Drink", status: "live", order: 1, data: { content: { html: "<p>Menu &amp; bar</p>" } } },
+    { title: "FAQ", status: "live", order: 2, data: { items: [{ question: "Bags & coats?", answer: "Yes" }] } },
+  ] } }).description, "<p>Rock & roll &check;</p><h3>Food & Drink</h3><p>Menu & bar</p><h3>FAQ</h3><p><strong>Bags & coats?</strong></p><p>Yes</p>");
+  const named = desc({ channelEvent: { name: "Rock &amp; Roll", contentBlocks: [] }, event: { ...o, description: {}, summary: "" } });
+  assert.deepEqual([named.description, named.eventName], ["<p>Rock & Roll</p>", "Rock & Roll"]);
+  const clipped = desc({ channelEvent: { name: "N", contentBlocks: [
+    { designation: "description", status: "live", data: { content: { html: `<p>A &amp; B &check; ${"word ".repeat(1200)}</p>` } } },
+  ] } }).description;
+  assert.match(clipped, /^<p>A & B &check; word/);
+});
+
+test("publish: `&amp;` anywhere in the snapshot never reaches Flite as `&amp;amp;`", () => {
+  const amp = "Tom &amp; Jerry";
+  const d = buildDesiredState(snap({
+    channelEvent: { name: amp, contentBlocks: [
+      { designation: "description", status: "live", data: { content: { text: amp } } },
+      { title: amp, status: "live", order: 1, data: { content: { html: `<p>${amp}</p>` } } },
+      { title: "FAQ", status: "live", order: 2, data: { items: [{ question: amp, answer: amp }] } },
+    ] },
+    channelTickets: [{ ...snap().channelTickets[0], name: amp, description: amp }],
+  }), opts);
+  assert.equal(d.event!.description, "<p>Tom & Jerry</p><h3>Tom & Jerry</h3><p>Tom & Jerry</p><h3>FAQ</h3><p><strong>Tom & Jerry</strong></p><p>Tom & Jerry</p>");
+  assert.deepEqual([d.event!.eventName, d.tickets[0].fields.ticketName, d.tickets[0].fields.description], ["Tom & Jerry", "Tom & Jerry", "Tom & Jerry"]);
+  const fallback = buildDesiredState(snap({ channelEvent: { name: amp, contentBlocks: [] }, event: { ...snap().event, description: {}, summary: "" } }), opts);
+  for (const sent of [d, fallback]) assert.doesNotMatch(JSON.stringify([sent.event, sent.tickets.map((t) => t.fields)]), /&amp;amp;/);
 });
 
 test("publish event: editor attributes, spans and empty paragraphs are removed from the HTML", () => {
@@ -126,6 +158,8 @@ test("publish event: HTML over Flite's 5000 characters drops trailing blocks, th
 test("publish tickets: HTML ticket descriptions become bullet lines", () => {
   const d = buildDesiredState(snap({ channelTickets: [{ ...snap().channelTickets[0], description: '<ul>\n<li>Admits 1</li>\n<li dir="ltr"><p role="presentation">Open bar &amp; DJ</p></li>\n</ul>' }] }), opts);
   assert.equal(d.tickets[0].fields.description, "• Admits 1\n• Open bar & DJ");
+  const named = buildDesiredState(snap({ channelTickets: [{ ...snap().channelTickets[0], name: "GA &ndash; Early &amp; Late" }] }), opts);
+  assert.equal(named.tickets[0].fields.ticketName, "GA – Early & Late");
 });
 
 test("publish tickets: capacity formula, availability, salesEnabled, errors", () => {

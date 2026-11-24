@@ -3,7 +3,7 @@
 import { cohostEventToFlite } from "../convert/event.ts";
 import { cohostTicketToFlite } from "../convert/ticket.ts";
 import type { CohostEvent, CohostTicket } from "../convert/cohost-types.ts";
-import { escapeHtml, FLITE_TEXT_MAX, fitHtml, parseAmount, summarize, textToHtml, toHtml, toPlainText } from "../convert/support.ts";
+import { escapeText, FLITE_TEXT_MAX, fitHtml, parseAmount, summarize, textToHtml, toHtml, toPlainText } from "../convert/support.ts";
 
 export type SyncMode = "publish" | "hold" | "stop" | "noop";
 export type FliteEnv = "sandbox" | "production";
@@ -96,8 +96,8 @@ function multipartHtml(value: unknown): string {
   return typeof value === "string" ? toHtml(value) : "";
 }
 
-/** Plain text on one line, HTML-escaped. */
-const inline = (text: string) => escapeHtml(text.replace(/\s+/g, " "));
+/** Plain text on one line, as event-description HTML. */
+const inline = (text: string) => escapeText(text.replace(/\s+/g, " "));
 
 /** One content block as HTML: a rich-text block's content, or an FAQ's questions and answers. */
 function blockHtml(block: Rec): string {
@@ -136,7 +136,7 @@ function describe(snapshot: ChannelSnapshot, name: string): string {
   const html = fitHtml(parts.map((part) => part.html), FLITE_TEXT_MAX);
   if (html) return html;
   const owner = snapshot.event;
-  return multipartHtml(owner.description) || textToHtml(toPlainText(str(owner.summary)) || name);
+  return multipartHtml(owner.description) || textToHtml(toPlainText(str(owner.summary)) || toPlainText(name));
 }
 
 function buildEvent(snapshot: ChannelSnapshot): Record<string, string> {
